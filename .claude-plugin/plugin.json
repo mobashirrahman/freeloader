@@ -1,7 +1,7 @@
 {
   "name": "freeloader",
-  "version": "0.3.0",
-  "description": "Plan with Opus, orchestrate with Sonnet, and have free opencode models write and review the code behind an objective test gate.",
+  "version": "1.0.0",
+  "description": "Opus plans, free opencode models write and review the code, and a test gate decides what gets merged.",
   "author": {
     "name": "Md Mobashir Rahman"
   },
@@ -10,5 +10,8 @@
     "opencode",
     "subagents",
     "cost"
-  ]
+  ],
+  "homepage": "https://github.com/mobashirrahman/freeloader",
+  "repository": "https://github.com/mobashirrahman/freeloader",
+  "license": "MIT"
 }

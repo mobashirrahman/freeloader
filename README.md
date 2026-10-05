@@ -8,7 +8,7 @@
 
 freeloader is a Claude Code plugin that hands the typing to free models. Opus breaks a feature into small tasks and writes the tests. Free models on [opencode](https://opencode.ai) race to implement each task. A shell script runs the tests and merges only what passes.
 
-You spend Claude tokens on one plan and one final review. The part in between, which is most of the tokens in a normal session, costs nothing.
+You spend Claude tokens on one plan and one final review. The part in between, which is where most of the tokens usually go, runs on free tiers.
 
 ## How it works
 

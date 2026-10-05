@@ -2,6 +2,19 @@
 
 Notable changes to this project. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - 2026-10-05
+
+First stable release. The task runner is unchanged from 0.3.0.
+
+### Verified for this release
+
+- Installing from GitHub with `/plugin marketplace add` and `/plugin install`.
+- A full `/freeloader:build` on live free models: plan, protected tests, two tasks, review, and hand-off.
+
+### Changed
+
+- Plugin manifest carries the repository, homepage, and licence.
+
 ## [0.3.0] - 2026-10-05
 
 ### Changed
@@ -34,5 +47,6 @@ First public version.
 - `/freeloader:doctor` preflight.
 - End-to-end test suite that runs without model access.
 
+[1.0.0]: https://github.com/mobashirrahman/freeloader/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/mobashirrahman/freeloader/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mobashirrahman/freeloader/releases/tag/v0.2.0

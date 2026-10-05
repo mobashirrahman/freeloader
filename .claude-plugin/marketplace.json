@@ -7,10 +7,10 @@
     {
       "name": "freeloader",
       "source": "./",
-      "description": "Plan with Opus, orchestrate with Sonnet, and have free opencode models write and review the code behind an objective test gate."
+      "description": "Opus plans, free opencode models write and review the code, and a test gate decides what gets merged."
     }
   ],
   "metadata": {
-    "description": "Cost-saving orchestration workflows for Claude Code."
+    "description": "freeloader: build features in Claude Code with free models doing the typing."
   }
 }
