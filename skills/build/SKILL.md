@@ -1,11 +1,11 @@
 ---
 name: build
-description: Build a feature with the swarm workflow, where Opus plans, free opencode models write and review the code behind a test gate, and you orchestrate. Use when the user runs /swarm:build or asks to build something "with the swarm".
+description: Build a feature with the freeloader workflow, where Opus plans, free opencode models write and review the code behind a test gate, and you orchestrate. Use when the user runs /freeloader:build or asks to build something "with the freeloader".
 argument-hint: <what to build>
 disable-model-invocation: true
 ---
 
-# Swarm build
+# Freeloader build
 
 You are the orchestrator. Your job is to dispatch work and read one-line verdicts. The point of this workflow is to spend as few Claude tokens as possible, so:
 
@@ -25,7 +25,7 @@ Pick a short kebab-case feature name, then run `"${CLAUDE_PLUGIN_ROOT}/scripts/f
 
 ## 2. Plan
 
-Spawn the `swarm:architect` agent in plan mode with the feature request, the plan directory, and the worktree path. It writes acceptance tests into the worktree and task files into the plan directory, and returns a table of id, title, tier, and depends.
+Spawn the `freeloader:architect` agent in plan mode with the feature request, the plan directory, and the worktree path. It writes acceptance tests into the worktree and task files into the plan directory, and returns a table of id, title, tier, and depends.
 
 Then run these two, in order:
 
@@ -61,7 +61,7 @@ Read only `status`, `stage`, `model`, `attempts`, and `detail` from the result:
 | `conflict` or `integration_fail` | passed alone, clashes with another task | run it again; it restarts from the updated feature branch |
 | `error` | bad task file or setup problem | fix what `error` says, or architect in revise mode |
 
-**Revise:** spawn `swarm:architect` in revise mode with the task file path and the `detail`. Run `check-plan.sh` again, run `feature.sh commit-tests` if it changed a test, then run the task files it returns. Revise a given task at most once.
+**Revise:** spawn `freeloader:architect` in revise mode with the task file path and the `detail`. Run `check-plan.sh` again, run `feature.sh commit-tests` if it changed a test, then run the task files it returns. Revise a given task at most once.
 
 **Escalate:** the failed attempt is still in the `worktree` path from the result. Spawn one general-purpose subagent on the `sonnet` model with the task file path, the worktree path, and the `detail`, telling it to finish the task inside that worktree, change only the task's allowed files, leave protected files alone, and not commit. Then run:
 
@@ -73,21 +73,21 @@ If that still fails, stop work on this task and on everything that depends on it
 
 ## 4. Final review
 
-When every task has passed, run `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" diff <feature>` and spawn `swarm:architect` in review mode with the `diff` path and the original request.
+When every task has passed, run `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" diff <feature>` and spawn `freeloader:architect` in review mode with the `diff` path and the original request.
 
 If it answers `CHANGES NEEDED`, have it write follow-up task files in revise mode, run them, and review once more. Do at most two review rounds.
 
 ## 5. Hand over
 
-Run `"${CLAUDE_PLUGIN_ROOT}/scripts/stats.sh" <feature>` and report to the user: tasks passed on free models, tasks that needed escalation, which model did most of the work, the reviewer's verdict, and the branch name `swarm/<feature>/main`.
+Run `"${CLAUDE_PLUGIN_ROOT}/scripts/stats.sh" <feature>` and report to the user: tasks passed on free models, tasks that needed escalation, which model did most of the work, the reviewer's verdict, and the branch name `freeloader/<feature>/main`.
 
 Do not merge or push anything yourself. Offer the user two ways to take the work, and do whichever they pick:
 
-- **Merge locally:** `git merge swarm/<feature>/main`.
+- **Merge locally:** `git merge freeloader/<feature>/main`.
 - **Open a pull request:** `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" pr <feature>` pushes the branch to `origin` and opens a PR against the branch they have checked out. It needs the `gh` CLI. Report the `url` it returns.
 
 After they have merged or opened the PR, or if they abandon the feature, run `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" cleanup <feature>`.
 
 ## If the session is interrupted
 
-Nothing is lost: plans, results, and branches are on disk. `/swarm:resume` picks the build up again.
+Nothing is lost: plans, results, and branches are on disk. `/freeloader:resume` picks the build up again.

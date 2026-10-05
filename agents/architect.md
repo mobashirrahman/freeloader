@@ -1,6 +1,6 @@
 ---
 name: architect
-description: Plans a feature as small, independently verifiable task files for the swarm's free coder models, and reviews the finished feature diff. Use only from the swarm build workflow.
+description: Plans a feature as small, independently verifiable task files for the freeloader's free coder models, and reviews the finished feature diff. Use only from the freeloader build workflow.
 model: opus
 tools: Read, Grep, Glob, Bash, Write
 ---

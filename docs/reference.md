@@ -1,119 +1,162 @@
-# swarm reference
+# Reference
 
-A Claude Code plugin that builds features with free models doing the typing.
+The [README](../README.md) covers what freeloader is and how to start. This page is for when you want to tune it, read its output, or understand what a script is doing.
 
-- **Opus** plans the feature once, as small task files with an acceptance command each.
-- **Sonnet** (your Claude Code session) orchestrates and reads one-line verdicts.
-- **Free opencode models** write the code and review it, one git worktree per task.
-- **A shell gate** runs the acceptance command, so no model's "done" is taken on trust.
-
-Claude tokens go to planning and one final review. Everything in between is free-tier.
-
-## Requirements
-
-- Claude Code
-- [opencode](https://opencode.ai) v2, signed in (`opencode auth login`)
-- `git`, `jq`, and one of `timeout`, `gtimeout`, or `perl`
-- `gh`, only if you want pull requests opened for you
-- macOS or Linux (Windows through WSL)
-
-## Install
-
-```
-/plugin marketplace add mobashirrahman/claude-code-agent-swarm
-/plugin install swarm@claude-code-agent-swarm
-/swarm:doctor
-```
-
-## Use
-
-In a git repository with at least one commit, on the Sonnet model:
-
-```
-/swarm:build add a slugify helper with tests
-```
-
-You approve the plan once. The work lands on a branch named `swarm/<feature>/main`; nothing touches your checked-out branch until you merge it or open a pull request from it.
-
-| Command | What it does |
-|---|---|
-| `/swarm:build <request>` | Plan, build, and review a feature |
-| `/swarm:resume [feature]` | Continue a build that was interrupted |
-| `/swarm:stats [feature]` | Pass rates per model, rate limits, escalations |
-| `/swarm:doctor [--ping]` | Check that opencode and the models are usable |
+- [How a task runs](#how-a-task-runs)
+- [Task files](#task-files)
+- [Results](#results)
+- [Configuration](#configuration)
+- [Scripts](#scripts)
+- [What it leaves in your repository](#what-it-leaves-in-your-repository)
+- [Safety](#safety)
 
 ## How a task runs
 
-`scripts/run-task.sh <feature> <task-file>` does this and prints one JSON line:
+`scripts/run-task.sh <feature> <task-file>` takes one task from nothing to merged:
 
-1. Picks the coder models: the task tier's own models first, then the general chain ordered by recorded pass rate, minus any in a rate-limit cooldown.
-2. Opens one to three lanes, by tier. Each lane is its own worktree with its own share of the models, so lanes never compete for one model's quota.
-3. In each lane, runs the coder through `opencode run`, discards changes to protected files, and checks that only allowed files changed.
-4. Runs the task's acceptance command, plus any `gate.commands`.
-5. Sends the diff to the reviewer model for a JSON verdict.
-6. On any failure, feeds the reason back to the coder, up to `roundsPerModel` times, then moves to the lane's next model with a clean tree.
-7. The first lane to pass wins and the others are stopped. The winner is merged into the feature branch, and the gate runs again if other tasks merged in the meantime.
+1. **Pick the models.** The task tier's own models go first, then the general list ordered by recorded pass rate. Models in a rate-limit cooldown are left out.
+2. **Open the lanes.** One to three, depending on the tier. Each lane is its own git worktree and gets its own share of the models, so two lanes never compete for one model's quota.
+3. **Code.** In each lane the coder model runs through `opencode run` with the task file as its prompt.
+4. **Scope.** Changes to protected files are thrown away. Changes outside the task's `files` list fail the attempt.
+5. **Gate.** The task's `accept` command runs, followed by any `gate.commands`. Exit code 0 or it did not happen.
+6. **Review.** A second free model reads the diff against the task and returns a JSON verdict.
+7. **Retry.** A failure at any step goes back to the coder as feedback, up to `roundsPerModel` times. After that the lane moves to its next model and starts from a clean tree.
+8. **Merge.** The first lane to pass wins and the others are stopped. The winner is merged into the feature branch. If other tasks merged in the meantime, the gate runs once more on the combined result, and the merge is rolled back if it fails.
 
-If every free model fails, the orchestrator has a Sonnet subagent finish the task in the same worktree, and `run-task.sh --verify-only` gates and merges it.
+If every free model fails, the orchestrator hands the worktree to a Sonnet subagent, then runs `run-task.sh --verify-only` so that the fix goes through the same scope check, gate, and merge.
 
-## What keeps weak models honest
+## Task files
 
-- **The architect writes the tests.** Opus writes the acceptance tests during planning and they are committed to the feature branch before any coder runs. Each task lists them under `protect`, and the runner throws away any edit a coder makes to them.
-- **The plan is checked before it runs.** `scripts/check-plan.sh` rejects a plan with a missing acceptance command, an unknown or circular dependency, or two parallel tasks that may edit the same file. It also returns the run order as waves.
-- **Rate limits are remembered.** A model that returns a 429 is skipped for `quota.cooldownSec` (30 minutes by default) across all tasks, and no attempt is spent on it. If every model is cooling, they are all tried anyway.
+The architect writes one Markdown file per task into `.freeloader/plan/<feature>/`. You can write or edit them by hand too.
 
-- **Tasks are tiered.** The architect marks each task `easy`, `normal`, or `hard`. By default one, two, or three models race on it, and `tiers.hard.models` can name stronger models to try first on hard tasks.
-- **Results are recorded.** Every attempt goes into `.swarm/ledger.jsonl`. Models are tried in order of their recorded pass rate, and `/swarm:stats` shows the numbers.
-- **Builds survive interruption.** Plans, results, and branches are on disk. A task that already passed is not run again, and `/swarm:resume` carries on from what is left.
+```
+---
+id: 001-slugify
+accept: python3 -m pytest tests/test_slug.py -q
+tier: normal
+files:
+  - src/slug.py
+protect:
+  - tests/test_slug.py
+depends:
+  - 000-setup
+---
+# Add slugify()
 
-A coder can still write code that special-cases the visible tests. The reviewer prompt and the final Opus review look for that; nothing mechanical prevents it yet.
+What to build: exact names, signatures, behaviours, and edge cases.
+```
 
-Logs for each task are in `.swarm/runs/<feature>/<task-id>/`. The `.swarm` directory is added to `.git/info/exclude`, not to your `.gitignore`.
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | Letters, digits, `.`, `_`, `-`. Must match the file name. |
+| `accept` | yes | One shell command, run from the repository root. Exit 0 means the task is done. |
+| `files` | yes | Paths or globs the coder may change. A trailing `/` allows a whole directory. |
+| `protect` | no | Paths the coder must not change, usually the tests the architect wrote. |
+| `depends` | no | Ids of tasks that must pass first. |
+| `tier` | no | `easy`, `normal` (default), or `hard`. Sets how many models race and which go first. |
 
-## Configure
+Everything after the front matter is the prompt the coder sees, along with the allowed files, the protected files, and the acceptance command. The coder has not seen your conversation, so the task has to stand on its own.
 
-Defaults are in [`swarm.config.default.json`](../swarm.config.default.json). To override, put a `swarm.config.json` at your repository root; it is merged over the defaults.
+`scripts/check-plan.sh <feature>` validates a plan before anything runs. It rejects missing fields, unknown or circular dependencies, and pairs of tasks that could run at the same time while editing the same file. It also returns the tasks grouped into waves: everything in a wave can run in parallel once the earlier waves have passed.
+
+## Results
+
+Every script prints one JSON line. For a task it looks like this (trimmed):
+
+```json
+{"status":"pass","id":"001-acronym","tier":"hard","stage":"done",
+ "model":"opencode/muse-spark-1.3-contributor-free","attempts":1,"lanes":3,
+ "seconds":18,"review":"pass","files":["textkit/acronym.py"]}
+```
+
+| `status` | `stage` | What happened |
+|---|---|---|
+| `pass` | `done` | Merged into the feature branch. `cached: true` means it had already passed and was not run again. |
+| `fail` | `coder` | The model made no changes, or every model was rate-limited or unavailable. |
+| `fail` | `scope` | The coder changed a file the task does not allow. |
+| `fail` | `gate` | The acceptance command still fails after all attempts. |
+| `fail` | `review` | The gate passes but the reviewer keeps rejecting the change. |
+| `conflict` | `merge` | Passed alone, but does not merge cleanly with a task that landed first. Run it again. |
+| `integration_fail` | `merge` | Merged cleanly, but the gate fails on the combined code. Run it again. |
+| `error` | | Bad task file or a setup problem. `error` or `detail` says which. |
+
+On a failure, `detail` holds the last feedback the coder was given and `worktree` points at the attempt, which is left in place. Full logs are in `.freeloader/runs/<feature>/<task-id>/`: the opencode event stream for each coder and reviewer call, and the output of each gate run.
+
+## Configuration
+
+Defaults live in [`freeloader.config.default.json`](../freeloader.config.default.json). To change one, create `freeloader.config.json` at your repository root with only the keys you want to override.
 
 ```json
 {
   "coder": { "models": ["opencode/nemotron-3-ultra-free"] },
+  "tiers": { "hard": { "models": ["opencode-go/kimi-k3"] } },
   "worktree": { "setup": ["npm ci"] },
   "gate": { "commands": ["npm run lint"] }
 }
 ```
 
-| Key | Purpose |
-|---|---|
-| `coder.models` | The coder models. Any `provider/model` from `opencode models`. |
-| `coder.autoOrder` | Try models in order of recorded pass rate (default `true`). Set `false` to keep the configured order. |
-| `tiers.<tier>.race` | How many lanes race on a task of that tier. Defaults: easy 1, normal 2, hard 3. |
-| `tiers.<tier>.models` | Models tried first for that tier, ahead of `coder.models`. |
-| `coder.roundsPerModel`, `coder.maxAttempts` | Feedback rounds per model, and the total cap. |
-| `coder.shellDeny` | Shell command prefixes the coder may not run. |
-| `reviewer.models` | Reviewer fallback chain. |
-| `reviewer.required` | If `true`, a task fails when no reviewer returns a verdict. Default `false`: the gate alone decides. |
-| `gate.commands` | Extra commands every task must pass, such as lint or typecheck. Not the full test suite: tests for unfinished tasks fail by design. |
-| `worktree.setup` | Commands run in each fresh worktree, such as installing dependencies. |
-| `scope.ignore` | Build junk that is never committed or counted as a scope violation. |
-| `scope.protect` | Paths no coder may change in any task, on top of each task's own `protect` list. |
-| `quota.cooldownSec` | How long a rate-limited model is skipped. |
+### Models
 
-Free model names change. `/swarm:doctor` tells you when a configured model is gone and lists the free ones on offer.
+| Key | Default | Purpose |
+|---|---|---|
+| `coder.models` | three free models | Coder models. Any `provider/model` that `opencode models` lists. |
+| `coder.autoOrder` | `true` | Try models in order of recorded pass rate. `false` keeps the order you wrote. |
+| `coder.roundsPerModel` | `3` | Attempts a model gets on a task, counting feedback rounds. |
+| `coder.maxAttempts` | `6` | Cap on attempts per lane, across all its models. |
+| `coder.timeoutSec` | `900` | Time limit for one coder call. |
+| `reviewer.models` | two free models | Reviewer models, tried in order. |
+| `reviewer.required` | `false` | If `true`, a task fails when no reviewer returns a usable verdict. Otherwise the gate alone decides. |
+| `tiers.<tier>.race` | 1, 2, 3 | Lanes for easy, normal, and hard tasks. |
+| `tiers.<tier>.models` | empty | Models tried first for that tier, ahead of `coder.models`. A good place for a stronger paid model on hard tasks. |
+| `quota.cooldownSec` | `1800` | How long a rate-limited model is skipped. |
+
+Racing uses free quota faster. If rate limits are your bottleneck, set `tiers.normal.race` to `1`.
+
+### Checks
+
+| Key | Default | Purpose |
+|---|---|---|
+| `gate.commands` | empty | Extra commands every task must pass, such as lint or a type check. Do not put the full test suite here: the architect's tests for unfinished tasks fail by design. |
+| `gate.timeoutSec` | `600` | Time limit for one gate command. |
+| `gate.feedbackLines` | `50` | Lines of failing output passed back to the coder. |
+| `scope.protect` | empty | Paths no coder may change in any task, on top of each task's own `protect` list. |
+| `scope.ignore` | caches, `node_modules` | Build leftovers that are never committed and never count as a scope violation. |
+
+### Environment
+
+| Key | Default | Purpose |
+|---|---|---|
+| `worktree.setup` | empty | Commands run in every fresh worktree. If your tests need installed dependencies, this is where `npm ci` or a virtualenv goes. |
+| `coder.shellDeny` | `git push`, `curl`, `sudo`, ... | Shell command prefixes the coder may not run. |
+
+## Scripts
+
+The slash commands are thin wrappers around these. They are safe to run by hand from your repository, which is the easiest way to debug a build.
+
+| Script | Does |
+|---|---|
+| `feature.sh start <feature> [request]` | Creates the feature branch, its worktree, and the plan directory. |
+| `check-plan.sh <feature>` | Validates the plan and returns the waves. |
+| `feature.sh commit-tests <feature>` | Commits the architect's tests to the feature branch. |
+| `run-task.sh <feature> <task-file>` | Runs one task. `--verify-only` gates and merges an existing worktree. `--force` re-runs a task that already passed. |
+| `status.sh [feature]` | What has passed and what can run next. |
+| `stats.sh [feature]` | Pass rate, rate limits, and timing per model. |
+| `feature.sh diff <feature>` | Writes the full feature diff to a file. |
+| `feature.sh pr <feature> [base]` | Pushes the branch and opens a pull request with `gh`. |
+| `feature.sh cleanup <feature>` | Removes worktrees and task branches. Keeps `freeloader/<feature>/main`. |
+| `doctor.sh [--ping]` | Checks tools, the opencode login, and the configured models. |
+
+## What it leaves in your repository
+
+- A `.freeloader/` directory with plans, logs, the ledger, and worktrees. It is added to `.git/info/exclude`, so it never shows up in `git status` and your `.gitignore` is not touched.
+- Branches under `freeloader/<feature>/`. The one that matters is `freeloader/<feature>/main`; the rest are per-task and go away on cleanup.
+- Nothing else. Your checked-out branch and working tree are not modified until you merge.
+
+Commits on `freeloader/*` branches skip your git hooks, because a pre-commit hook that prompts or needs your environment would stall an unattended run.
 
 ## Safety
 
-- The coder runs with `opencode run --auto` in its own worktree. Its agent may read, search, edit, and run shell commands; writing outside the worktree, web access, and the `shellDeny` prefixes are denied by opencode.
-- The shell deny list is a guardrail, not a sandbox. A model can still reach the network or other files through a shell command that is not on the list. Do not run this on a machine with secrets you would not expose to an unreviewed script.
-- Agents are injected for each run with a private opencode server and an empty config directory. Your own opencode config, MCP servers, and plugins are not read or changed.
-- Free model providers may log or train on what they are sent. Check their terms before using this on private code.
-- Task commits and merges on `swarm/*` branches skip your git hooks.
-
-## Layout
-
-```
-.claude-plugin/   plugin and marketplace manifests
-agents/           architect (Opus)
-skills/           build, resume, stats, doctor
-scripts/          run-task.sh, check-plan.sh, feature.sh, status.sh, stats.sh, doctor.sh, lib.sh
-opencode/         coder and reviewer prompts
-```
+- The coder runs with `opencode run --auto` inside its worktree. It may read, search, edit, and run shell commands. Writing outside the worktree, fetching from the web, and the `shellDeny` prefixes are denied by opencode's permission system.
+- The deny list is a guardrail, not a sandbox. It matches command prefixes, so a model can reach the network or other files through a command that is not listed. Do not run this on a machine holding secrets you would not expose to a script you have not read.
+- Each run uses a private opencode server with an empty config directory. Your own opencode configuration, MCP servers, and plugins are neither read nor changed.
+- Your code goes to the model providers you configure. Free tiers often log or train on what they receive, so check their terms before pointing this at private code.

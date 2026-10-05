@@ -16,12 +16,12 @@ need git jq
 load_repo
 
 task_status() {
-  jq -r '.status // "pending"' "$SWARM_DIR/runs/$1/$2/result.json" 2>/dev/null || echo pending
+  jq -r '.status // "pending"' "$FL_DIR/runs/$1/$2/result.json" 2>/dev/null || echo pending
 }
 
 if [ -z "$FEATURE" ]; then
   LIST="[]"
-  for d in "$SWARM_DIR"/plan/*/; do
+  for d in "$FL_DIR"/plan/*/; do
     [ -d "$d" ] || continue
     f="$(basename "$d")"
     total=0
@@ -41,16 +41,16 @@ if [ -z "$FEATURE" ]; then
 fi
 
 valid_name "$FEATURE" || die "invalid feature name"
-PLAN="$SWARM_DIR/plan/$FEATURE"
+PLAN="$FL_DIR/plan/$FEATURE"
 [ -d "$PLAN" ] || die "no plan for feature '$FEATURE'"
 
-CHECK="$("$SWARM_ROOT/scripts/check-plan.sh" "$FEATURE" 2>/dev/null)"
+CHECK="$("$FL_ROOT/scripts/check-plan.sh" "$FEATURE" 2>/dev/null)"
 jq -e '.tasks' >/dev/null 2>&1 <<<"$CHECK" || die "could not read the plan for '$FEATURE'"
 
 RESULTS="{}"
 while IFS= read -r id; do
   [ -n "$id" ] || continue
-  r="$SWARM_DIR/runs/$FEATURE/$id/result.json"
+  r="$FL_DIR/runs/$FEATURE/$id/result.json"
   if [ -f "$r" ]; then
     RESULTS="$(jq -c --arg id "$id" --slurpfile r "$r" \
       '. + {($id): ($r[0] | {status, stage, model, attempts, worktree, detail: (.detail // "")[0:300]})}' <<<"$RESULTS")"

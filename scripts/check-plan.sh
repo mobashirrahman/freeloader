@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-plan.sh <feature>
 #
-# Validates the task files in .swarm/plan/<feature>/ before any model is run:
+# Validates the task files in .freeloader/plan/<feature>/ before any model is run:
 # ids, acceptance commands, dependencies, protected files, and that no two tasks
 # that could run at the same time are allowed to edit the same file.
 #
@@ -18,7 +18,7 @@ need git jq
 valid_name "$FEATURE" || die "feature name may only contain letters, digits, '.', '_' and '-'"
 load_repo
 
-PLAN="$SWARM_DIR/plan/$FEATURE"
+PLAN="$FL_DIR/plan/$FEATURE"
 MAIN_WT="$(feature_worktree "$FEATURE")"
 [ -d "$PLAN" ] || die "no plan directory: $PLAN"
 

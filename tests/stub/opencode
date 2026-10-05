@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Test double for `opencode run`, so the suite needs no network and no model.
+#
+#   FAKE_CODER_CMD     shell run as the "coder", in the task worktree. It can read
+#                      FAKE_MODEL and FAKE_PROMPT.
+#   FAKE_REVIEWS       comma-separated verdicts the "reviewer" gives in turn
+#                      (pass or fail); once they run out it passes.
+#   FAKE_QUOTA_MODELS  comma-separated models that answer with a rate limit.
+#   FAKE_STATE         directory for the call log and the review counter.
+
+agent="" model="" prev="" prompt=""
+for arg in "$@"; do
+  [ "$prev" = "--agent" ] && agent="$arg"
+  [ "$prev" = "-m" ] && model="$arg"
+  prev="$arg"
+  prompt="$arg"
+done
+
+say() { jq -cn --arg t "$1" '{type: "text", part: {text: $t}}'; }
+
+echo "$agent $model" >>"$FAKE_STATE/calls"
+
+case ",${FAKE_QUOTA_MODELS:-}," in
+  *",$model,"*)
+    echo '{"type":"error","error":{"type":"provider.quota","status":429}}'
+    exit 1
+    ;;
+esac
+
+if [ "$agent" = "freeloader-coder" ]; then
+  printf '%s\n-----\n' "$prompt" >>"$FAKE_STATE/prompts"
+  FAKE_MODEL="$model" FAKE_PROMPT="$prompt" bash -c "${FAKE_CODER_CMD:-true}"
+  say "done"
+else
+  n=$(($(cat "$FAKE_STATE/reviews" 2>/dev/null || echo 0) + 1))
+  echo "$n" >"$FAKE_STATE/reviews"
+  verdict="$(echo "${FAKE_REVIEWS:-pass}" | cut -d, -f"$n")"
+  if [ "$verdict" = fail ]; then
+    # Wrapped in prose and a code fence on purpose: real models do this.
+    say 'Here is my review:
+```json
+{"verdict": "FAIL", "issues": [{"file": "greet.txt", "problem": "not polite", "fix": "add the word please"}]}
+```'
+  else
+    say '{"verdict": "pass", "issues": []}'
+  fi
+fi

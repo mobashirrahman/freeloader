@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # doctor.sh [--ping]
 #
-# Preflight for the swarm workflow. Checks the tools, the opencode login, and that
+# Preflight for the freeloader workflow. Checks the tools, the opencode login, and that
 # every configured model is on offer. --ping also sends one tiny request per model;
 # it is off by default because free tiers have small quotas.
 #
@@ -41,12 +41,12 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   load_repo
   ok "git repository: $REPO"
   git -C "$REPO" rev-parse HEAD >/dev/null 2>&1 || problem "repository has no commits yet; make one first"
-  [ -f "$REPO/swarm.config.json" ] && ok "using project swarm.config.json"
+  [ -f "$REPO/freeloader.config.json" ] && ok "using project freeloader.config.json"
   [ "$(cfg '.worktree.setup | length')" -gt 0 ] \
-    || warn "worktree.setup is empty; if tests need installed dependencies (npm ci, a venv), add the command to swarm.config.json"
+    || warn "worktree.setup is empty; if tests need installed dependencies (npm ci, a venv), add the command to freeloader.config.json"
 else
   problem "not inside a git repository"
-  CFG="$(cat "$SWARM_ROOT/swarm.config.default.json")"
+  CFG="$(cat "$FL_ROOT/freeloader.config.default.json")"
 fi
 
 if [ "$(opencode auth list 2>/dev/null | grep -c .)" -gt 0 ]; then
@@ -69,7 +69,7 @@ check_models() {
     fi
     if [ "$PING" -eq 1 ]; then
       build_agents_json
-      run_opencode swarm-reviewer "$model" 60 "$TMP/ping.jsonl" "Reply with the single word OK."
+      run_opencode freeloader-reviewer "$model" 60 "$TMP/ping.jsonl" "Reply with the single word OK."
       if [ "$OC_STATUS" != ok ]; then
         warn "$role model $model did not answer: $OC_STATUS"
         continue

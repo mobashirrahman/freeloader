@@ -1,11 +1,11 @@
 {
-  "name": "claude-code-agent-swarm",
+  "name": "freeloader",
   "owner": {
-    "name": "Mobashir Rahman"
+    "name": "Md Mobashir Rahman"
   },
   "plugins": [
     {
-      "name": "swarm",
+      "name": "freeloader",
       "source": "./",
       "description": "Plan with Opus, orchestrate with Sonnet, and have free opencode models write and review the code behind an objective test gate."
     }

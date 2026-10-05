@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # stats.sh [<feature>]
 #
-# Summarises the run ledger (.swarm/ledger.jsonl): how each model has performed
+# Summarises the run ledger (.freeloader/ledger.jsonl): how each model has performed
 # and how tasks ended, for one feature or for everything recorded in this repo.
 #
 # Prints a table on stderr and one JSON line on stdout.
@@ -14,7 +14,7 @@ need git jq
 [ -z "$FEATURE" ] || valid_name "$FEATURE" || die "invalid feature name"
 load_repo
 
-LEDGER="$SWARM_DIR/ledger.jsonl"
+LEDGER="$FL_DIR/ledger.jsonl"
 [ -s "$LEDGER" ] || die "nothing recorded yet; run a task first"
 
 OUT="$(jq -cn --arg feature "$FEATURE" --slurpfile ledger "$LEDGER" '

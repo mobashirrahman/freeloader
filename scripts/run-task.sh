@@ -9,7 +9,7 @@
 # Depending on the task's tier, several lanes race: each lane is its own git
 # worktree with its own share of the coder models, and the first lane to pass wins.
 #
-# Prints exactly one JSON line; everything else goes to .swarm/runs/<feature>/<task-id>/.
+# Prints exactly one JSON line; everything else goes to .freeloader/runs/<feature>/<task-id>/.
 #
 # --verify-only skips the coder and reviewer and just gates and merges whatever is
 #               already in the task's worktree. Use it after fixing a failed task
@@ -83,13 +83,13 @@ $(cfg '.scope.protect[]')"
 ensure_feature "$FEATURE"
 MAIN_BRANCH="$(feature_branch "$FEATURE")"
 MAIN_WT="$(feature_worktree "$FEATURE")"
-WT_ROOT="$SWARM_DIR/worktrees/$FEATURE"
-RUN_ROOT="$SWARM_DIR/runs/$FEATURE/$ID"
+WT_ROOT="$FL_DIR/worktrees/$FEATURE"
+RUN_ROOT="$FL_DIR/runs/$FEATURE/$ID"
 START="$(date +%s)"
 
 # Lane 1 uses the task's own names; extra lanes get a --rN suffix.
 lane_wt() { if [ "$1" -eq 1 ]; then echo "$WT_ROOT/$ID"; else echo "$WT_ROOT/$ID--r$1"; fi; }
-lane_branch() { if [ "$1" -eq 1 ]; then echo "swarm/$FEATURE/$ID"; else echo "swarm/$FEATURE/$ID--r$1"; fi; }
+lane_branch() { if [ "$1" -eq 1 ]; then echo "freeloader/$FEATURE/$ID"; else echo "freeloader/$FEATURE/$ID--r$1"; fi; }
 
 # A task that already passed and is merged is not run again, so a resumed build
 # can call every task without redoing finished work.
@@ -224,7 +224,7 @@ $(git -C "$WT" diff --cached "$BASE" | head -c "$MAX_DIFF")"
   ISSUES="[]"
   while IFS= read -r model <&5; do
     [ -n "$model" ] || continue
-    run_opencode swarm-reviewer "$model" "$REVIEW_TIMEOUT" "$RUN/review-$n.jsonl" "$prompt"
+    run_opencode freeloader-reviewer "$model" "$REVIEW_TIMEOUT" "$RUN/review-$n.jsonl" "$prompt"
     [ "$OC_STATUS" = ok ] || continue
     json="$(printf '%s' "$OC_TEXT" | extract_json)" || continue
     verdict="$(jq -r '.verdict | ascii_downcase' <<<"$json" 2>/dev/null)" || continue
@@ -316,7 +316,7 @@ lane_main() {
       round=$((round + 1))
       ATTEMPTS=$((ATTEMPTS + 1))
       t0="$(date +%s)"
-      run_opencode swarm-coder "$model" "$CODER_TIMEOUT" "$RUN/coder-$ATTEMPTS.jsonl" \
+      run_opencode freeloader-coder "$model" "$CODER_TIMEOUT" "$RUN/coder-$ATTEMPTS.jsonl" \
         "$(coder_prompt "$FEEDBACK")"
       if [ "$OC_STATUS" = quota ] || [ "$OC_STATUS" = error ]; then
         STAGE=coder
@@ -342,7 +342,7 @@ $FEEDBACK"
     emit fail
     return 1
   fi
-  git_commit "$WT" "swarm($ID): $TITLE" || { DETAIL="commit failed"; emit error; return 2; }
+  git_commit "$WT" "freeloader($ID): $TITLE" || { DETAIL="commit failed"; emit error; return 2; }
   COMMIT="$(git -C "$WT" rev-parse HEAD)"
   emit pass
 }
@@ -385,7 +385,7 @@ if [ "$VERIFY_ONLY" -eq 1 ]; then
   cd "$WT" || die "cannot enter worktree $WT"
   if check 1; then
     if ! git -C "$WT" diff --cached --quiet; then
-      git_commit "$WT" "swarm($ID): $TITLE" || { DETAIL="commit failed"; emit error; exit 2; }
+      git_commit "$WT" "freeloader($ID): $TITLE" || { DETAIL="commit failed"; emit error; exit 2; }
     fi
     COMMIT="$(git -C "$WT" rev-parse HEAD)"
     PASSED=1
@@ -407,7 +407,7 @@ else
   done
   git -C "$REPO" worktree prune
   git -C "$REPO" for-each-ref --format='%(refname:short)' \
-    "refs/heads/swarm/$FEATURE/$ID" "refs/heads/swarm/$FEATURE/$ID--r*" | while IFS= read -r b; do
+    "refs/heads/freeloader/$FEATURE/$ID" "refs/heads/freeloader/$FEATURE/$ID--r*" | while IFS= read -r b; do
     git -C "$REPO" branch -q -D "$b" >/dev/null 2>&1
   done
   BASE="$(git -C "$MAIN_WT" rev-parse HEAD)"

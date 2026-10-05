@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Shared helpers for the swarm scripts. Source this; do not run it.
+# Shared helpers for the freeloader scripts. Source this; do not run it.
 # Written for bash 3.2 so it works with the stock macOS shell.
 
-SWARM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Every script prints exactly one JSON line on stdout; errors follow the same rule.
 die() {
-  echo "swarm: $1" >&2
+  echo "freeloader: $1" >&2
   jq -cn --arg e "$1" '{status:"error",error:$e}' 2>/dev/null || echo '{"status":"error"}'
   exit 2
 }
@@ -25,29 +25,29 @@ valid_name() {
   return 0
 }
 
-# Sets REPO (the main checkout, even when called from a worktree), SWARM_DIR, CFG.
+# Sets REPO (the main checkout, even when called from a worktree), FL_DIR, CFG.
 load_repo() {
   local common
   common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
     || die "not inside a git repository"
   REPO="$(dirname "$common")"
-  SWARM_DIR="$REPO/.swarm"
-  mkdir -p "$SWARM_DIR"
-  # Keep .swarm out of the user's status without touching their tracked .gitignore.
-  grep -qxF '.swarm/' "$common/info/exclude" 2>/dev/null || {
+  FL_DIR="$REPO/.freeloader"
+  mkdir -p "$FL_DIR"
+  # Keep .freeloader out of the user's status without touching their tracked .gitignore.
+  grep -qxF '.freeloader/' "$common/info/exclude" 2>/dev/null || {
     mkdir -p "$common/info"
-    echo '.swarm/' >> "$common/info/exclude"
+    echo '.freeloader/' >> "$common/info/exclude"
   }
-  # Commits and merges on swarm branches must not fail for lack of an identity.
+  # Commits and merges on freeloader branches must not fail for lack of an identity.
   if ! git -C "$REPO" config user.email >/dev/null 2>&1; then
-    export GIT_AUTHOR_NAME=swarm GIT_AUTHOR_EMAIL=swarm@localhost
-    export GIT_COMMITTER_NAME=swarm GIT_COMMITTER_EMAIL=swarm@localhost
+    export GIT_AUTHOR_NAME=freeloader GIT_AUTHOR_EMAIL=freeloader@localhost
+    export GIT_COMMITTER_NAME=freeloader GIT_COMMITTER_EMAIL=freeloader@localhost
   fi
-  if [ -f "$REPO/swarm.config.json" ]; then
-    CFG="$(jq -s '.[0] * .[1]' "$SWARM_ROOT/swarm.config.default.json" "$REPO/swarm.config.json")" \
-      || die "swarm.config.json is not valid JSON"
+  if [ -f "$REPO/freeloader.config.json" ]; then
+    CFG="$(jq -s '.[0] * .[1]' "$FL_ROOT/freeloader.config.default.json" "$REPO/freeloader.config.json")" \
+      || die "freeloader.config.json is not valid JSON"
   else
-    CFG="$(cat "$SWARM_ROOT/swarm.config.default.json")"
+    CFG="$(cat "$FL_ROOT/freeloader.config.default.json")"
   fi
 }
 
@@ -70,12 +70,12 @@ is_timeout_rc() { [ "$1" -eq 124 ] || [ "$1" -eq 142 ]; }
 # Agents are injected per run, so nothing is written to the user's opencode config.
 build_agents_json() {
   AGENTS_JSON="$(jq -cn \
-    --rawfile coder "$SWARM_ROOT/opencode/coder.md" \
-    --rawfile reviewer "$SWARM_ROOT/opencode/reviewer.md" \
+    --rawfile coder "$FL_ROOT/opencode/coder.md" \
+    --rawfile reviewer "$FL_ROOT/opencode/reviewer.md" \
     --argjson deny "$(cfg '.coder.shellDeny')" '
     {agent: {
-      "swarm-coder": {
-        description: "Implements one swarm task",
+      "freeloader-coder": {
+        description: "Implements one freeloader task",
         mode: "primary",
         prompt: $coder,
         permission: {
@@ -84,8 +84,8 @@ build_agents_json() {
           bash: ({"*": "allow"} + ($deny | map({(.): "deny"}) | add // {}))
         }
       },
-      "swarm-reviewer": {
-        description: "Reviews one swarm task diff",
+      "freeloader-reviewer": {
+        description: "Reviews one freeloader task diff",
         mode: "primary",
         prompt: $reviewer,
         permission: {
@@ -102,7 +102,7 @@ build_agents_json() {
 run_opencode() {
   local agent=$1 model=$2 secs=$3 log=$4 prompt=$5 rc=0 etype
   # An empty config dir keeps the user's global MCP servers and plugins out of the run.
-  OPENCODE_CONFIG_DIR="$SWARM_ROOT/opencode/config" \
+  OPENCODE_CONFIG_DIR="$FL_ROOT/opencode/config" \
   OPENCODE_CONFIG_CONTENT="$AGENTS_JSON" \
     with_timeout "$secs" opencode run --standalone --agent "$agent" -m "$model" \
       --auto --format json "$prompt" >"$log" 2>&1 </dev/null || rc=$?
@@ -128,13 +128,13 @@ run_opencode() {
 # so later tasks do not each waste an attempt rediscovering the limit.
 
 cooldown_file() {
-  echo "$SWARM_DIR/state/cooldown/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+  echo "$FL_DIR/state/cooldown/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
 }
 
 # Prints the seconds of cooldown left for a model; fails if it is not cooling.
 cooldown_left() {
   local until now
-  [ -n "${SWARM_DIR:-}" ] || return 1
+  [ -n "${FL_DIR:-}" ] || return 1
   until="$(cat "$(cooldown_file "$1")" 2>/dev/null)"
   case "$until" in ""|*[!0-9]*) return 1 ;; esac
   now="$(date +%s)"
@@ -143,13 +143,13 @@ cooldown_left() {
 }
 
 mark_cooldown() {
-  [ -n "${SWARM_DIR:-}" ] || return 0
-  mkdir -p "$SWARM_DIR/state/cooldown"
+  [ -n "${FL_DIR:-}" ] || return 0
+  mkdir -p "$FL_DIR/state/cooldown"
   echo $(($(date +%s) + $(cfg '.quota.cooldownSec'))) >"$(cooldown_file "$1")"
 }
 
 clear_cooldown() {
-  [ -n "${SWARM_DIR:-}" ] || return 0
+  [ -n "${FL_DIR:-}" ] || return 0
   rm -f "$(cooldown_file "$1")"
 }
 
@@ -166,19 +166,19 @@ usable_models() {
 }
 
 # --- ledger ------------------------------------------------------------------
-# One JSON line per coder attempt and per finished task, in .swarm/ledger.jsonl.
+# One JSON line per coder attempt and per finished task, in .freeloader/ledger.jsonl.
 
-ledger() { printf '%s\n' "$1" >>"$SWARM_DIR/ledger.jsonl"; }
+ledger() { printf '%s\n' "$1" >>"$FL_DIR/ledger.jsonl"; }
 
 # ordered_models <newline-separated models>: best recorded pass rate first. The
 # rate is smoothed, so an untried model sits at 50% and keeps its configured place
 # among equals. Rate limits and outages are not counted against a model.
 ordered_models() {
-  if [ "$(cfg '.coder.autoOrder')" != true ] || [ ! -s "$SWARM_DIR/ledger.jsonl" ]; then
+  if [ "$(cfg '.coder.autoOrder')" != true ] || [ ! -s "$FL_DIR/ledger.jsonl" ]; then
     printf '%s\n' "$1"
     return 0
   fi
-  jq -rn --arg list "$1" --slurpfile ledger "$SWARM_DIR/ledger.jsonl" '
+  jq -rn --arg list "$1" --slurpfile ledger "$FL_DIR/ledger.jsonl" '
     ($ledger
       | map(select(.kind == "attempt" and .outcome != "quota" and .outcome != "error"))
       | group_by(.model)
@@ -240,10 +240,10 @@ git_commit() {
   git -C "$1" commit -q --no-verify -m "$2"
 }
 
-# Directory locks under .swarm/locks, with the holder's pid so a dead holder can be evicted.
+# Directory locks under .freeloader/locks, with the holder's pid so a dead holder can be evicted.
 acquire_lock() {
-  local lock="$SWARM_DIR/locks/$1" waited=0 pid
-  mkdir -p "$SWARM_DIR/locks"
+  local lock="$FL_DIR/locks/$1" waited=0 pid
+  mkdir -p "$FL_DIR/locks"
   until mkdir "$lock" 2>/dev/null; do
     pid="$(cat "$lock/pid" 2>/dev/null)"
     if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
@@ -264,8 +264,8 @@ release_lock() {
 }
 trap release_lock EXIT
 
-feature_branch() { echo "swarm/$1/main"; }
-feature_worktree() { echo "$SWARM_DIR/worktrees/$1/_main"; }
+feature_branch() { echo "freeloader/$1/main"; }
+feature_worktree() { echo "$FL_DIR/worktrees/$1/_main"; }
 
 # Creates the integration branch and worktree for a feature if they do not exist.
 ensure_feature() {
@@ -292,8 +292,8 @@ run_setup() {
   i=0
   while [ "$i" -lt "$n" ]; do
     cmd="$(cfg ".worktree.setup[$i]")"
-    (cd "$wt" && bash -c "$cmd") >>"$SWARM_DIR/setup.log" 2>&1 \
-      || die "worktree setup command failed: $cmd (see .swarm/setup.log)"
+    (cd "$wt" && bash -c "$cmd") >>"$FL_DIR/setup.log" 2>&1 \
+      || die "worktree setup command failed: $cmd (see .freeloader/setup.log)"
     i=$((i + 1))
   done
 }

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the end-to-end suite
+        run: tests/run.sh
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck --severity=warning scripts/*.sh tests/run.sh tests/stub/opencode
+      - name: JSON files parse
+        run: |
+          for f in .claude-plugin/*.json freeloader.config.default.json; do
+            jq empty "$f"
+          done
+      - name: Scripts are executable
+        run: |
+          for f in scripts/*.sh tests/run.sh tests/stub/opencode; do
+            test -x "$f" || { echo "$f is not executable"; exit 1; }
+          done
