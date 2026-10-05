@@ -40,7 +40,7 @@ valid_name "$FEATURE" || die "feature name may only contain letters, digits, '.'
 TASK="$(cd "$(dirname "$TASK")" && pwd)/$(basename "$TASK")"
 
 load_repo
-build_agents_json
+build_role_configs
 
 # --- task file ---------------------------------------------------------------
 
@@ -224,7 +224,7 @@ $(git -C "$WT" diff --cached "$BASE" | head -c "$MAX_DIFF")"
   ISSUES="[]"
   while IFS= read -r model <&5; do
     [ -n "$model" ] || continue
-    run_opencode freeloader-reviewer "$model" "$REVIEW_TIMEOUT" "$RUN/review-$n.jsonl" "$prompt"
+    run_opencode reviewer "$model" "$REVIEW_TIMEOUT" "$RUN/review-$n.jsonl" "$prompt"
     [ "$OC_STATUS" = ok ] || continue
     json="$(printf '%s' "$OC_TEXT" | extract_json)" || continue
     verdict="$(jq -r '.verdict | ascii_downcase' <<<"$json" 2>/dev/null)" || continue
@@ -236,7 +236,8 @@ $(git -C "$WT" diff --cached "$BASE" | head -c "$MAX_DIFF")"
         return 0
         ;;
     esac
-  done 5<<<"$(usable_models "$REVIEW_MODELS")"
+  # A review is optional, so reviewers that are cooling down are simply not asked.
+  done 5<<<"$(ready_models "$REVIEW_MODELS")"
   return 0
 }
 
@@ -316,11 +317,11 @@ lane_main() {
       round=$((round + 1))
       ATTEMPTS=$((ATTEMPTS + 1))
       t0="$(date +%s)"
-      run_opencode freeloader-coder "$model" "$CODER_TIMEOUT" "$RUN/coder-$ATTEMPTS.jsonl" \
+      run_opencode coder "$model" "$CODER_TIMEOUT" "$RUN/coder-$ATTEMPTS.jsonl" \
         "$(coder_prompt "$FEEDBACK")"
-      if [ "$OC_STATUS" = quota ] || [ "$OC_STATUS" = error ]; then
+      if [ "$OC_STATUS" = quota ] || [ "$OC_STATUS" = refused ] || [ "$OC_STATUS" = error ]; then
         STAGE=coder
-        FEEDBACK="coder model $model failed: $OC_STATUS"
+        FEEDBACK="coder model $model failed: $OC_STATUS${OC_ERROR:+ ($OC_ERROR)}"
         ledger_attempt "$model" "$OC_STATUS" "$t0"
         # A model that never ran does not use up one of the task's attempts.
         ATTEMPTS=$((ATTEMPTS - 1))

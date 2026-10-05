@@ -6,6 +6,7 @@ The [README](../README.md) covers what freeloader is and how to start. This page
 - [Task files](#task-files)
 - [Results](#results)
 - [Configuration](#configuration)
+- [What the models can do](#what-the-models-can-do)
 - [Scripts](#scripts)
 - [What it leaves in your repository](#what-it-leaves-in-your-repository)
 - [Safety](#safety)
@@ -72,7 +73,7 @@ Every script prints one JSON line. For a task it looks like this (trimmed):
 | `status` | `stage` | What happened |
 |---|---|---|
 | `pass` | `done` | Merged into the feature branch. `cached: true` means it had already passed and was not run again. |
-| `fail` | `coder` | The model made no changes, or every model was rate-limited or unavailable. |
+| `fail` | `coder` | The model made no changes, or every model was rate-limited, refused the request, or was unavailable. |
 | `fail` | `scope` | The coder changed a file the task does not allow. |
 | `fail` | `gate` | The acceptance command still fails after all attempts. |
 | `fail` | `review` | The gate passes but the reviewer keeps rejecting the change. |
@@ -108,7 +109,8 @@ Defaults live in [`freeloader.config.default.json`](../freeloader.config.default
 | `reviewer.required` | `false` | If `true`, a task fails when no reviewer returns a usable verdict. Otherwise the gate alone decides. |
 | `tiers.<tier>.race` | 1, 2, 3 | Lanes for easy, normal, and hard tasks. |
 | `tiers.<tier>.models` | empty | Models tried first for that tier, ahead of `coder.models`. A good place for a stronger paid model on hard tasks. |
-| `quota.cooldownSec` | `1800` | How long a rate-limited model is skipped. |
+| `quota.cooldownSec` | `1800` | How long a model is skipped after it rate-limits or refuses a request. |
+| `coder.web`, `reviewer.web` | `true` | Whether the model may fetch web pages, mainly to read documentation. |
 
 Racing uses free quota faster. If rate limits are your bottleneck, set `tiers.normal.race` to `1`.
 
@@ -127,7 +129,35 @@ Racing uses free quota faster. If rate limits are your bottleneck, set `tiers.no
 | Key | Default | Purpose |
 |---|---|---|
 | `worktree.setup` | empty | Commands run in every fresh worktree. If your tests need installed dependencies, this is where `npm ci` or a virtualenv goes. |
-| `coder.shellDeny` | `git push`, `curl`, `sudo`, ... | Shell command prefixes the coder may not run. |
+| `coder.shellDeny` | `git push`, `curl`, `sudo`, `opencode`, ... | Shell command prefixes the coder may not run. |
+
+## What the models can do
+
+Both roles run on opencode's stock `build` agent. Each call gets its own permission config, and anything not listed below is denied, including asking questions, spawning subagents, and MCP tools.
+
+| | Coder | Reviewer |
+|---|---|---|
+| Read, search, and list files in the worktree | yes | yes |
+| Edit files in the worktree | yes | no |
+| Touch files outside the worktree | no | no |
+| Run shell commands | yes, except `coder.shellDeny` | no |
+| Fetch a web page | yes, unless `coder.web` is `false` | yes, unless `reviewer.web` is `false` |
+| Web search | no | no |
+
+Why it is set up this way:
+
+- **The coder gets a shell** because a coder that cannot run the tests is guessing. That is also what makes it the risky role, so the deny list covers the commands with consequences outside the worktree: pushing, rewriting history, uploading, and escalating.
+- **The coder gets web fetch** because weak models invent library APIs, and reading the documentation is the cheapest fix. Denying it bought little: a model with a shell can already reach the network through `pip`, `npm`, or a line of Python.
+- **The reviewer gets no shell and no edits.** Its only output is a verdict, the gate has already run the tests, and a reviewer that can change files could alter what gets merged after it was checked.
+- **Web search is off for both.** opencode cancels it in unattended runs, so allowing it would only waste a turn.
+
+Fetched pages are untrusted input to an agent with a shell. Both prompts tell the model to treat them as reference and never follow instructions found in them, but that is a request, not a guarantee. Set `coder.web` to `false` if that risk is not acceptable for your repository.
+
+### When a provider refuses
+
+opencode's free tier does not accept every request. At the time of writing, custom agents are widely reported not to work on it, and in testing it refused the read-only reviewer profile on most free models while accepting the coder profile. freeloader treats a refusal like a rate limit: the model is skipped for `quota.cooldownSec` and the next one is tried.
+
+If no reviewer model accepts, the review is recorded as `skipped` and the task is merged on the acceptance gate alone, unless `reviewer.required` is `true`. `/freeloader:doctor --ping` shows which models are answering in which role.
 
 ## Scripts
 
@@ -156,7 +186,7 @@ Commits on `freeloader/*` branches skip your git hooks, because a pre-commit hoo
 
 ## Safety
 
-- The coder runs with `opencode run --auto` inside its worktree. It may read, search, edit, and run shell commands. Writing outside the worktree, fetching from the web, and the `shellDeny` prefixes are denied by opencode's permission system.
+- The coder runs with `opencode run --auto` inside its worktree. It may read, search, edit, run shell commands, and fetch web pages. Writing outside the worktree and the `shellDeny` prefixes are denied by opencode's permission system. The full list is under [What the models can do](#what-the-models-can-do).
 - The deny list is a guardrail, not a sandbox. It matches command prefixes, so a model can reach the network or other files through a command that is not listed. Do not run this on a machine holding secrets you would not expose to a script you have not read.
 - Each run uses a private opencode server with an empty config directory. Your own opencode configuration, MCP servers, and plugins are neither read nor changed.
 - Your code goes to the model providers you configure. Free tiers often log or train on what they receive, so check their terms before pointing this at private code.

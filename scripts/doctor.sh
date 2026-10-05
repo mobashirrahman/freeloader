@@ -61,7 +61,7 @@ AVAILABLE="$(opencode models 2>/dev/null)"
 FREE="$(grep -- '-free$' <<<"$AVAILABLE" | tr '\n' ' ')"
 
 check_models() {
-  local role=$1 model usable=0 left
+  local role=$1 model usable=0 left as
   while IFS= read -r model; do
     [ -n "$model" ] || continue
     if ! grep -qxF "$model" <<<"$AVAILABLE"; then
@@ -69,26 +69,32 @@ check_models() {
       continue
     fi
     if [ "$PING" -eq 1 ]; then
-      build_agents_json
-      run_opencode freeloader-reviewer "$model" 60 "$TMP/ping.jsonl" "Reply with the single word OK."
+      case "$role" in reviewer) as=reviewer ;; *) as=coder ;; esac
+      run_opencode "$as" "$model" 60 "$TMP/ping.jsonl" "Reply with the single word OK."
       if [ "$OC_STATUS" != ok ]; then
-        warn "$role model $model did not answer: $OC_STATUS"
+        warn "$role model $model did not answer: $OC_STATUS${OC_ERROR:+ ($OC_ERROR)}"
         continue
       fi
     fi
     if left="$(cooldown_left "$model")"; then
-      warn "$role model $model is rate-limited; skipped for another $((left / 60 + 1)) min"
+      warn "$role model $model is rate-limited or refusing requests; skipped for another $((left / 60 + 1)) min"
     else
       ok "$role model: $model"
     fi
     usable=$((usable + 1))
   done <<<"$(cfg "$2")"
-  [ "$usable" -gt 0 ] || problem "no usable $role model. Free models currently on offer: $FREE"
+  [ "$usable" -gt 0 ] && return 0
+  if [ "$role" = reviewer ] && [ "$(cfg '.reviewer.required')" != true ]; then
+    warn "no usable reviewer model, so tasks will be merged on the acceptance gate alone. Free models currently on offer: $FREE"
+  else
+    problem "no usable $role model. Free models currently on offer: $FREE"
+  fi
 }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cd "$TMP" || exit 2
+build_role_configs
 check_models coder '.coder.models[]'
 check_models reviewer '.reviewer.models[]'
 for tier in easy normal hard; do

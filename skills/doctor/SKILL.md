@@ -14,4 +14,6 @@ It prints a checklist on stderr and one JSON line on stdout. Report the result i
 - If a model is reported as not on offer, the free model line-up has changed. The failure message lists the free models currently available; suggest the user put working ones in a `freeloader.config.json` at the repository root, for example `{"coder": {"models": ["opencode/<model>"]}}`. Project settings are merged over the plugin defaults.
 - If opencode is missing, point the user to https://opencode.ai to install it and to `opencode auth login` to sign in.
 
+- If a model is reported as `refused`, the provider is declining that kind of request, which opencode's free tier does for some models and roles. It is skipped automatically. If every reviewer is refused, tasks are merged on the acceptance gate alone; say so plainly.
+
 `--ping` sends one small request to every configured model to prove it answers. Free tiers have small quotas, so only use it when the user asks or when models are listed but tasks keep failing with quota or error.

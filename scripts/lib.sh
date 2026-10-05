@@ -67,59 +67,59 @@ with_timeout() {
 
 is_timeout_rc() { [ "$1" -eq 124 ] || [ "$1" -eq 142 ]; }
 
-# Agents are injected per run, so nothing is written to the user's opencode config.
-build_agents_json() {
-  AGENTS_JSON="$(jq -cn \
-    --rawfile coder "$FL_ROOT/opencode/coder.md" \
-    --rawfile reviewer "$FL_ROOT/opencode/reviewer.md" \
-    --argjson deny "$(cfg '.coder.shellDeny')" '
-    {agent: {
-      "freeloader-coder": {
-        description: "Implements one freeloader task",
-        mode: "primary",
-        prompt: $coder,
-        permission: {
-          "*": "deny", read: "allow", grep: "allow", glob: "allow", edit: "allow",
-          external_directory: "deny",
-          bash: ({"*": "allow"} + ($deny | map({(.): "deny"}) | add // {}))
-        }
-      },
-      "freeloader-reviewer": {
-        description: "Reviews one freeloader task diff",
-        mode: "primary",
-        prompt: $reviewer,
-        permission: {
-          "*": "deny", read: "allow", grep: "allow", glob: "allow",
-          external_directory: "deny"
-        }
-      }
-    }}')"
+# The coder and the reviewer both run on opencode's stock "build" agent. What sets
+# them apart is the permission config passed for that one run, and the role
+# instructions put at the top of the prompt. Nothing is written to the user's own
+# opencode config. (Custom agents are avoided: opencode's free tier is reported to
+# refuse them.)
+build_role_configs() {
+  CODER_CONFIG="$(jq -cn --argjson deny "$(cfg '.coder.shellDeny')" --argjson web "$(cfg '.coder.web')" '
+    {permission: ({
+      "*": "deny", read: "allow", grep: "allow", glob: "allow", edit: "allow",
+      external_directory: "deny",
+      bash: ({"*": "allow"} + ($deny | map({(.): "deny"}) | add // {}))
+    } + (if $web then {webfetch: "allow"} else {} end))}')"
+  REVIEWER_CONFIG="$(jq -cn --argjson web "$(cfg '.reviewer.web')" '
+    {permission: ({
+      "*": "deny", read: "allow", grep: "allow", glob: "allow",
+      external_directory: "deny"
+    } + (if $web then {webfetch: "allow"} else {} end))}')"
 }
 
-# run_opencode <agent> <model> <timeout-sec> <log-file> <prompt>
-# Runs in the current directory. Sets OC_STATUS to ok | quota | timeout | error
-# and OC_TEXT to the model's text output.
+# run_opencode <coder|reviewer> <model> <timeout-sec> <log-file> <prompt>
+# Runs in the current directory. Sets OC_STATUS to ok | quota | refused | timeout |
+# error, OC_TEXT to the model's text output, and OC_ERROR to the provider's message.
+# "refused" is the provider declining to serve this request at all, which is how
+# opencode's free tier answers requests it does not accept.
 run_opencode() {
-  local agent=$1 model=$2 secs=$3 log=$4 prompt=$5 rc=0 etype
+  local role=$1 model=$2 secs=$3 log=$4 prompt=$5 rc=0 etype config
+  if [ "$role" = coder ]; then config="$CODER_CONFIG"; else config="$REVIEWER_CONFIG"; fi
+  prompt="$(cat "$FL_ROOT/opencode/$role.md")
+
+$prompt"
   # An empty config dir keeps the user's global MCP servers and plugins out of the run.
+  FREELOADER_ROLE="$role" \
   OPENCODE_CONFIG_DIR="$FL_ROOT/opencode/config" \
-  OPENCODE_CONFIG_CONTENT="$AGENTS_JSON" \
-    with_timeout "$secs" opencode run --standalone --agent "$agent" -m "$model" \
+  OPENCODE_CONFIG_CONTENT="$config" \
+    with_timeout "$secs" opencode run --standalone --agent build -m "$model" \
       --auto --format json "$prompt" >"$log" 2>&1 </dev/null || rc=$?
   # shellcheck disable=SC2034  # read by the callers
   OC_TEXT="$(jq -rR 'fromjson? | select(.type=="text") | .part.text' "$log" 2>/dev/null || true)"
   etype="$(jq -rR 'fromjson? | select(.type=="error") | .error.type' "$log" 2>/dev/null | head -1)"
+  OC_ERROR="$(jq -rR 'fromjson? | select(.type=="error") | .error.message' "$log" 2>/dev/null | head -1 | cut -c 1-200)"
   if is_timeout_rc "$rc"; then
     OC_STATUS=timeout
   elif [ "$etype" = "provider.quota" ]; then
     OC_STATUS=quota
+  elif [ "$etype" = "provider.auth" ]; then
+    OC_STATUS=refused
   elif [ -n "$etype" ] || [ "$rc" -ne 0 ]; then
     OC_STATUS=error
   else
     OC_STATUS=ok
   fi
   case "$OC_STATUS" in
-    quota) mark_cooldown "$model" ;;
+    quota|refused) mark_cooldown "$model" ;;
     ok) clear_cooldown "$model" ;;
   esac
 }
@@ -154,16 +154,22 @@ clear_cooldown() {
   rm -f "$(cooldown_file "$1")"
 }
 
-# usable_models <newline-separated models>: drops the cooling ones. If every model
-# is cooling, returns them all, since a cooldown is only a guess at the real limit.
-usable_models() {
-  local m out=""
+# ready_models <newline-separated models>: the ones that are not cooling down.
+ready_models() {
+  local m
   while IFS= read -r m; do
     [ -n "$m" ] || continue
-    cooldown_left "$m" >/dev/null || out="$out$m
-"
+    cooldown_left "$m" >/dev/null || printf '%s\n' "$m"
   done <<<"$1"
-  if [ -n "$out" ]; then printf '%s' "$out"; else printf '%s\n' "$1"; fi
+}
+
+# usable_models <newline-separated models>: like ready_models, but if every model
+# is cooling it returns them all, since a cooldown is only a guess at the real
+# limit and a coder is needed either way.
+usable_models() {
+  local out
+  out="$(ready_models "$1")"
+  if [ -n "$out" ]; then printf '%s\n' "$out"; else printf '%s\n' "$1"; fi
 }
 
 # --- ledger ------------------------------------------------------------------
@@ -173,7 +179,7 @@ ledger() { printf '%s\n' "$1" >>"$FL_DIR/ledger.jsonl"; }
 
 # ordered_models <newline-separated models>: best recorded pass rate first. The
 # rate is smoothed, so an untried model sits at 50% and keeps its configured place
-# among equals. Rate limits and outages are not counted against a model.
+# among equals. Rate limits, refusals and outages are not counted against a model.
 ordered_models() {
   if [ "$(cfg '.coder.autoOrder')" != true ] || [ ! -s "$FL_DIR/ledger.jsonl" ]; then
     printf '%s\n' "$1"
@@ -181,7 +187,7 @@ ordered_models() {
   fi
   jq -rn --arg list "$1" --slurpfile ledger "$FL_DIR/ledger.jsonl" '
     ($ledger
-      | map(select(.kind == "attempt" and .outcome != "quota" and .outcome != "error"))
+      | map(select(.kind == "attempt" and (.outcome | IN("quota", "refused", "error") | not)))
       | group_by(.model)
       | map({key: .[0].model,
              value: (((map(select(.outcome == "pass")) | length) + 1) / (length + 2))})

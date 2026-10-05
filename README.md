@@ -108,7 +108,8 @@ Each task leaves a one-line result behind, which is all the orchestrator reads:
 
 ## Things it handles for you
 
-- **Rate limits.** Free tiers are small. A model that returns a 429 is skipped for half an hour and the next one takes over.
+- **Rate limits.** Free tiers are small. A model that returns a 429 or refuses the request is skipped for half an hour and the next one takes over.
+- **Documentation lookups.** Coders can fetch web pages, so they can read a library's docs instead of guessing at its API.
 - **Parallel work.** Tasks that do not depend on each other run at the same time. The plan is checked first so that two of them never edit the same file, and a merge that breaks the combined code is rolled back.
 - **Interruptions.** Plans, results, and branches live on disk. Close the session, come back later, and `/freeloader:resume` carries on from the tasks that are left.
 - **Picking models.** Every attempt is recorded. Models with a better record in your repository are tried first, and `/freeloader:stats` shows you the numbers.
@@ -120,7 +121,8 @@ Configuration, the task file format, and every script are described in [docs/ref
 
 Worth knowing before you rely on it:
 
-- **It is not a sandbox.** Coders run unattended with shell access inside their worktree. They are denied writes outside it, web access, and commands like `git push` and `curl`, but those rules are a guardrail. See [SECURITY.md](SECURITY.md).
+- **It is not a sandbox.** Coders run unattended with a shell and web fetch inside their worktree. They are denied writes outside it and commands like `git push` and `curl`, but those rules are a guardrail. See [SECURITY.md](SECURITY.md).
+- **It depends on someone else's free tier.** opencode decides what its free models will serve, and it has been tightening that. freeloader skips a model that refuses and carries on, and you can point it at paid models instead, but free capacity is not guaranteed.
 - **Your code leaves your machine.** Free providers may log or train on what they are sent. Check their terms before using this on private code.
 - **Tests are the ceiling.** A coder can still write code that passes the visible tests and nothing else. The reviewer and the final Opus pass look for that, but nothing mechanical stops it yet.
 - **Free line-ups change.** The default models are whatever opencode offered for free when this was written. `/freeloader:doctor` tells you when one is gone.

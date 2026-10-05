@@ -26,7 +26,7 @@ OUT="$(jq -cn --arg feature "$FEATURE" --slurpfile ledger "$LEDGER" '
   | ($runs | group_by([.feature, .id]) | map(last)) as $tasks
   | {feature: (if $feature == "" then null else $feature end),
      models: ($attempts | group_by(.model) | map(
-        (map(select(.outcome != "quota" and .outcome != "error"))) as $real
+        (map(select(.outcome | IN("quota", "refused", "error") | not))) as $real
         | {model: .[0].model,
            attempts: ($real | length),
            passes: ($real | map(select(.outcome == "pass")) | length),
@@ -35,6 +35,7 @@ OUT="$(jq -cn --arg feature "$FEATURE" --slurpfile ledger "$LEDGER" '
            failedAt: ($real | map(select(.outcome != "pass") | .outcome) | group_by(.)
                       | map({key: .[0], value: length}) | from_entries),
            rateLimited: (map(select(.outcome == "quota")) | length),
+           refused: (map(select(.outcome == "refused")) | length),
            avgSeconds: (if ($real | length) == 0 then null
                         else ($real | map(.seconds) | add / length | round) end)})
         | sort_by(-(.passRate // -1), -.attempts)),

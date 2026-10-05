@@ -274,7 +274,37 @@ better_model_goes_first() {
   FAKE_CODER_CMD='[ "$FAKE_MODEL" = m/good ] && echo ok > a.txt || echo no > a.txt' run f "$PLAN/a.md" >/dev/null
   : >"$FAKE_STATE/calls"
   FAKE_CODER_CMD='echo ok > b.txt' run f "$PLAN/b.md" >/dev/null
-  eq "first coder call" "freeloader-coder m/good" "$(grep coder "$FAKE_STATE/calls" | head -1)"
+  eq "first coder call" "coder m/good" "$(grep coder "$FAKE_STATE/calls" | head -1)"
+}
+
+permissions_follow_the_config() {
+  new_repo '{"coder":{"web":false},"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md" >/dev/null
+  local coder reviewer
+  coder="$(grep '^coder ' "$FAKE_STATE/configs" | head -1 | cut -d' ' -f2-)"
+  reviewer="$(grep '^reviewer ' "$FAKE_STATE/configs" | head -1 | cut -d' ' -f2-)"
+  eq "coder may edit" allow "$(field .permission.edit "$coder")"
+  eq "coder web off when configured off" null "$(field .permission.webfetch "$coder")"
+  eq "coder cannot leave the worktree" deny "$(field .permission.external_directory "$coder")"
+  eq "coder cannot push" deny "$(field '.permission.bash["git push*"]' "$coder")"
+  eq "reviewer cannot edit" null "$(field .permission.edit "$reviewer")"
+  eq "reviewer has no shell" null "$(field .permission.bash "$reviewer")"
+  eq "reviewer web on by default" allow "$(field .permission.webfetch "$reviewer")"
+  eq "everything else denied" deny "$(field '.permission["*"]' "$reviewer")"
+}
+
+refused_reviewer_leaves_it_to_the_gate() {
+  new_repo '{"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  task b 'test -f b.txt' b.txt
+  local out
+  out="$(FAKE_REFUSE_ROLES=reviewer FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
+  eq status pass "$(field .status "$out")"
+  eq review skipped "$(field .review "$out")"
+  : >"$FAKE_STATE/calls"
+  FAKE_REFUSE_ROLES=reviewer FAKE_CODER_CMD='echo x > b.txt' run f "$PLAN/b.md" >/dev/null
+  eq "refusing reviewers are not asked again" "" "$(grep '^reviewer' "$FAKE_STATE/calls")"
 }
 
 # --- parallel tasks ----------------------------------------------------------
@@ -350,6 +380,8 @@ t "models: rate-limited model cools down" rate_limited_model_cools_down
 t "models: race, first lane to pass wins" race_first_lane_to_pass_wins
 t "models: tier sets lanes and models" tier_sets_lanes_and_models
 t "models: better model goes first" better_model_goes_first
+t "models: permissions follow the config" permissions_follow_the_config
+t "models: refused reviewer leaves it to the gate" refused_reviewer_leaves_it_to_the_gate
 t "parallel: conflict, then rerun" parallel_conflict_then_rerun
 t "parallel: pass alone, fail together" parallel_pass_alone_fail_together
 t "status: tracks progress" status_tracks_progress

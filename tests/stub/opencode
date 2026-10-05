@@ -6,11 +6,11 @@
 #   FAKE_REVIEWS       comma-separated verdicts the "reviewer" gives in turn
 #                      (pass or fail); once they run out it passes.
 #   FAKE_QUOTA_MODELS  comma-separated models that answer with a rate limit.
+#   FAKE_REFUSE_ROLES  comma-separated roles (coder, reviewer) the provider refuses.
 #   FAKE_STATE         directory for the call log and the review counter.
 
-agent="" model="" prev="" prompt=""
+model="" prev="" prompt=""
 for arg in "$@"; do
-  [ "$prev" = "--agent" ] && agent="$arg"
   [ "$prev" = "-m" ] && model="$arg"
   prev="$arg"
   prompt="$arg"
@@ -18,7 +18,7 @@ done
 
 say() { jq -cn --arg t "$1" '{type: "text", part: {text: $t}}'; }
 
-echo "$agent $model" >>"$FAKE_STATE/calls"
+echo "$FREELOADER_ROLE $model" >>"$FAKE_STATE/calls"
 
 case ",${FAKE_QUOTA_MODELS:-}," in
   *",$model,"*)
@@ -27,7 +27,16 @@ case ",${FAKE_QUOTA_MODELS:-}," in
     ;;
 esac
 
-if [ "$agent" = "freeloader-coder" ]; then
+echo "$FREELOADER_ROLE $OPENCODE_CONFIG_CONTENT" >>"$FAKE_STATE/configs"
+
+case ",${FAKE_REFUSE_ROLES:-}," in
+  *",$FREELOADER_ROLE,"*)
+    echo '{"type":"error","error":{"type":"provider.auth","message":"free tier refused","status":403}}'
+    exit 1
+    ;;
+esac
+
+if [ "$FREELOADER_ROLE" = coder ]; then
   printf '%s\n-----\n' "$prompt" >>"$FAKE_STATE/prompts"
   FAKE_MODEL="$model" FAKE_PROMPT="$prompt" bash -c "${FAKE_CODER_CMD:-true}"
   say "done"

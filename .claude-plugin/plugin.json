@@ -1,6 +1,6 @@
 {
   "name": "freeloader",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Plan with Opus, orchestrate with Sonnet, and have free opencode models write and review the code behind an objective test gate.",
   "author": {
     "name": "Md Mobashir Rahman"

@@ -21,9 +21,11 @@
       "wget*",
       "ssh*",
       "scp*",
-      "sudo*"
+      "sudo*",
+      "opencode*"
     ],
-    "autoOrder": true
+    "autoOrder": true,
+    "web": true
   },
   "reviewer": {
     "models": [
@@ -32,7 +34,8 @@
     ],
     "required": false,
     "timeoutSec": 300,
-    "maxDiffBytes": 60000
+    "maxDiffBytes": 60000,
+    "web": true
   },
   "gate": {
     "commands": [],
