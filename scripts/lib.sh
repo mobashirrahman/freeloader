@@ -148,6 +148,15 @@ $prompt"
     quota|refused) mark_cooldown "$model" ;;
     ok) clear_cooldown "$model" ;;
   esac
+  # A rate limit rotates the egress exit (when enabled) so the next attempt
+  # leaves through a fresh proxy. Key-based quotas will not lift, but
+  # IP-based throttling might; the model cooldown still applies either way.
+  # Note: `.egress.rotateOnQuota // true` would be wrong here, since jq's //
+  # treats an explicit false like a missing key.
+  if [ "$OC_STATUS" = quota ] && [ "${EGRESS_ON:-0}" -eq 1 ] \
+    && [ "$(cfg '.egress.rotateOnQuota | if . == null then true else . end')" = true ]; then
+    egress_rotate "${EG_ID:-}"
+  fi
 }
 
 opencode_exec() {
@@ -160,55 +169,50 @@ opencode_exec() {
 }
 
 # --- egress ------------------------------------------------------------------
-# Optional: send every model call through one of the user's own HTTP proxies.
-# An exit is picked at random and then kept, across tasks, until it stops
-# working. It is replaced only when the exit itself fails to connect, never in
-# response to a rate limit or a refusal from a provider.
+# Optional: send every model call through one of the user's own proxies.
+# Pool semantics mirror pi-swarm (vendor/pi-swarm/egress.ts): random sticky
+# exit, fail-closed country filter, TTL blacklist, plus rotation to a fresh
+# exit on provider rate limits (egress.rotateOnQuota). Supported upstreams are
+# http://, https://, socks://, socks5:// and socks5h:// in CC=url, url#CC,
+# url#country=CC and url?country=CC forms.
 #
 # Proxy URLs carry credentials, so they are never logged or put in the agent's
 # environment. Each call gets a forwarder on 127.0.0.1 (egress-forward.js) that
 # holds them; everything else sees only a label such as "US-3f2a".
 
 # Sets EGRESS_ON and EGRESS_LIST (one "id<TAB>country<TAB>url" per line).
+# Parsing lives in scripts/egress-parse.js, derived from the vendored
+# pi-swarm pool (vendor/pi-swarm/egress.ts), so entry forms, JSON files,
+# and PI_SWARM_* env names stay in sync. Ids remain cksum(url) so existing
+# .freeloader/state/egress-current files keep working.
 load_egress() {
   EGRESS_ON=0
   EGRESS_LIST=""
   [ "$(cfg '.egress.mode')" = on ] || return 0
   need node
-  local raw="${FREELOADER_PROXIES:-}" file line entry country url id want
-  file="${FREELOADER_PROXIES_FILE:-$(cfg '.egress.proxiesFile // ""')}"
-  if [ -z "$raw" ] && [ -n "$file" ]; then
-    [ -r "$file" ] || die "egress: cannot read proxies file $file"
-    # Either an env file with a FREELOADER_PROXIES= or PI_SWARM_PROXIES= line, or a plain list.
-    line="$(grep -E '^(export[[:space:]]+)?(FREELOADER_PROXIES|PI_SWARM_PROXIES)=' "$file" | head -1)"
-    if [ -n "$line" ]; then
-      raw="$(printf '%s' "${line#*=}" | unquote)"
-    else
-      raw="$(grep -v '^[[:space:]]*#' "$file")"
-    fi
-  fi
+  local parsed country url id cfg_file cfg_countries err_file
+  cfg_file="$(cfg '.egress.proxiesFile // ""')"
+  cfg_countries="$(cfg '.egress.countries // [] | map(ascii_upcase) | join(",")')"
+  err_file="${FL_DIR:-/tmp}/egress-parse.err"
+  # Re-export shell vars (tests set them without export) for the node parser.
+  parsed="$(FREELOADER_PROXIES="${FREELOADER_PROXIES:-}" PI_SWARM_PROXIES="${PI_SWARM_PROXIES:-}" FREELOADER_PROXIES_FILE="${FREELOADER_PROXIES_FILE:-}" PI_SWARM_PROXIES_FILE="${PI_SWARM_PROXIES_FILE:-}" PI_SWARM_EGRESS_COUNTRIES="${PI_SWARM_EGRESS_COUNTRIES:-}" FREELOADER_EGRESS_COUNTRIES="${FREELOADER_EGRESS_COUNTRIES:-}" node "$FL_ROOT/scripts/egress-parse.js" --proxies-file "$cfg_file" --countries "$cfg_countries" 2>"$err_file")" || {
+    cat "$err_file" >&2 2>/dev/null || true
+    die "egress: cannot read proxies file ${FREELOADER_PROXIES_FILE:-${PI_SWARM_PROXIES_FILE:-$cfg_file}}"
+  }
   # The list is now held in this shell only. Drop it from the environment so that
   # no child process, least of all an agent with a shell, inherits it.
-  unset FREELOADER_PROXIES FREELOADER_PROXIES_FILE PI_SWARM_PROXIES PI_SWARM_PROXIES_FILE
-  want="$(cfg '.egress.countries // [] | map(ascii_upcase) | .[]')"
-  while IFS= read -r entry; do
-    entry="$(printf '%s' "$entry" | tr -d '[:space:]')"
-    [ -n "$entry" ] || continue
-    country=""
-    url="$entry"
-    case "$entry" in
-      [A-Za-z][A-Za-z]=*) country="${entry%%=*}"; url="${entry#*=}" ;;
-      *"#"*) country="${entry##*#}"; country="${country#country=}"; url="${entry%%#*}" ;;
-    esac
-    case "$url" in http://*|https://*) ;; *) continue ;; esac
-    country="$(printf '%s' "$country" | tr '[:lower:]' '[:upper:]')"
-    case "$country" in [A-Z][A-Z]) ;; *) country="" ;; esac
-    # A country filter is strict: an untagged exit never stands in for a requested one.
-    if [ -n "$want" ] && ! grep -qxF "$country" <<<"$want"; then continue; fi
+  unset FREELOADER_PROXIES FREELOADER_PROXIES_FILE PI_SWARM_PROXIES PI_SWARM_PROXIES_FILE PI_SWARM_EGRESS_COUNTRIES FREELOADER_EGRESS_COUNTRIES
+  local seen_ids=" "
+  while IFS='	' read -r country url; do
+    [ -n "$url" ] || continue
     id="$(printf '%s' "$url" | cksum | cut -d' ' -f1)"
+    # Same upstream listed twice (e.g. with/without trailing slash collapsed
+    # upstream) keeps the first country so the label stays stable.
+    case "$seen_ids" in *" $id "*) continue ;; esac
+    seen_ids="$seen_ids$id "
     EGRESS_LIST="$EGRESS_LIST$id	$country	$url
 "
-  done <<<"$(printf '%s' "$raw" | tr ',' '\n')"
+  done <<<"$parsed"
   [ -n "$EGRESS_LIST" ] || die "egress is on but no usable proxy was found (check egress.proxiesFile and egress.countries)"
   EGRESS_ON=1
 }
@@ -251,6 +255,27 @@ egress_pick() {
   IFS='	' read -r EG_ID EG_COUNTRY EG_URL <<<"$(printf '%s' "$alive" | sed -n "${pick}p")"
   mkdir -p "$FL_DIR/state"
   echo "$EG_ID" >"$FL_DIR/state/egress-current"
+}
+
+# Rotates the sticky exit after a rate limit: records a different live exit
+# than $1 (or the recorded current), so the next call leaves through a fresh
+# proxy. Keeps the current one when no alternative is alive. Never fails.
+egress_rotate() {
+  local old="${1:-$(cat "$FL_DIR/state/egress-current" 2>/dev/null)}"
+  local alive="" id country url n pick
+  while IFS='	' read -r id country url; do
+    [ -n "$id" ] || continue
+    [ "$id" != "$old" ] || continue
+    egress_is_dead "$id" && continue
+    alive="$alive$id	$country	$url
+"
+  done <<<"$EGRESS_LIST"
+  n="$(printf '%s' "$alive" | grep -c .)"
+  [ "$n" -gt 0 ] || return 0
+  pick=$(($(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % n + 1))
+  id="$(printf '%s' "$alive" | sed -n "${pick}p" | cut -f1)"
+  mkdir -p "$FL_DIR/state"
+  echo "$id" >"$FL_DIR/state/egress-current"
 }
 
 # Starts a forwarder for the picked exit. Sets EG_PORT, EG_PID, EG_LOG, EG_LABEL.

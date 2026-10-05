@@ -75,9 +75,10 @@
     }
   },
   "egress": {
-    "mode": "off",
+    "mode": "on",
     "proxiesFile": "",
     "countries": [],
-    "retrySec": 300
+    "retrySec": 300,
+    "rotateOnQuota": true
   }
 }

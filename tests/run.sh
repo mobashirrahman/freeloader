@@ -54,7 +54,15 @@ new_repo() {
   echo base >shared.txt
   git add -A
   git -c user.name=test -c user.email=test@example.com commit -qm init
-  [ -z "${1:-}" ] || echo "$1" >freeloader.config.json
+  # The suite pins egress off unless a test says otherwise, so ordinary tests
+  # run direct even though the shipped default is mode on.
+  if [ -z "${1:-}" ]; then
+    echo '{"egress":{"mode":"off"}}' >freeloader.config.json
+  elif grep -q '"egress"' <<<"$1"; then
+    echo "$1" >freeloader.config.json
+  else
+    jq -c '. + {"egress":{"mode":"off"}}' <<<"$1" >freeloader.config.json
+  fi
   "$S/feature.sh" start f "Build the thing" >/dev/null
   PLAN=.freeloader/plan/f
   MAIN_WT=.freeloader/worktrees/f/_main
@@ -363,9 +371,20 @@ egress_replaces_a_dead_exit() {
   stop_upstream
 }
 
-egress_stays_put_on_a_rate_limit() {
+egress_rotates_on_a_rate_limit() {
   start_upstream
-  new_repo '{"egress":{"mode":"on"},"coder":{"models":["m/limited","m/good"]},"tiers":{"normal":{"race":1}}}'
+  new_repo '{"egress":{"mode":"on","rotateOnQuota":true},"coder":{"models":["m/limited","m/good"]},"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  local out
+  out="$(FREELOADER_PROXIES="US=http://user:s3cret@127.0.0.1:$UP_PORT,DE=http://user:s3cret@127.0.0.1:$UP_PORT/" FAKE_QUOTA_MODELS=m/limited FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
+  eq status pass "$(field .status "$out")"
+  eq "rate limit moved to a fresh exit" 2 "$(jq -r 'select(.kind == "attempt") | .egress' .freeloader/ledger.jsonl | sort -u | grep -c .)"
+  stop_upstream
+}
+
+egress_stays_put_on_a_rate_limit_when_rotation_is_off() {
+  start_upstream
+  new_repo '{"egress":{"mode":"on","rotateOnQuota":false},"coder":{"models":["m/limited","m/good"]},"tiers":{"normal":{"race":1}}}'
   task a 'test -f a.txt' a.txt
   local out
   out="$(FREELOADER_PROXIES="US=http://user:s3cret@127.0.0.1:$UP_PORT,DE=http://user:s3cret@127.0.0.1:$UP_PORT/" FAKE_QUOTA_MODELS=m/limited FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
@@ -388,8 +407,21 @@ egress_country_filter_fails_closed() {
   stop_upstream
 }
 
-egress_is_off_by_default() {
-  new_repo '{"tiers":{"normal":{"race":1}}}'
+egress_is_on_by_default() {
+  start_upstream
+  new_repo
+  rm freeloader.config.json # pure shipped defaults: egress mode on
+  task a 'test -f a.txt' a.txt
+  local out
+  out="$(FREELOADER_PROXIES="US=http://user:s3cret@127.0.0.1:$UP_PORT" FAKE_PROBE=1 FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
+  eq status pass "$(field .status "$out")"
+  has "exit used without any repo config" "US-" "$(field .egress "$out")"
+  eq "nothing went direct" "" "$(grep direct "$FAKE_STATE/proxies")"
+  stop_upstream
+}
+
+egress_explicit_off_stays_direct() {
+  new_repo '{"egress":{"mode":"off"},"tiers":{"normal":{"race":1}}}'
   task a 'test -f a.txt' a.txt
   local out
   out="$(FREELOADER_PROXIES="US=http://user:s3cret@127.0.0.1:1" FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
@@ -475,9 +507,11 @@ t "models: permissions follow the config" permissions_follow_the_config
 t "models: refused reviewer leaves it to the gate" refused_reviewer_leaves_it_to_the_gate
 t "egress: credentials stay out of the agent, exit is kept" egress_keeps_credentials_from_the_agent
 t "egress: a dead exit is replaced" egress_replaces_a_dead_exit
-t "egress: a rate limit does not change the exit" egress_stays_put_on_a_rate_limit
+t "egress: a rate limit rotates the exit" egress_rotates_on_a_rate_limit
+t "egress: rotation off keeps the exit on a rate limit" egress_stays_put_on_a_rate_limit_when_rotation_is_off
 t "egress: country filter fails closed" egress_country_filter_fails_closed
-t "egress: off by default" egress_is_off_by_default
+t "egress: on by default" egress_is_on_by_default
+t "egress: explicit off stays direct" egress_explicit_off_stays_direct
 t "parallel: conflict, then rerun" parallel_conflict_then_rerun
 t "parallel: pass alone, fail together" parallel_pass_alone_fail_together
 t "status: tracks progress" status_tracks_progress

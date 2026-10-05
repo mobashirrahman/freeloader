@@ -162,7 +162,7 @@ If no reviewer model accepts, the review is recorded as `skipped` and the task i
 
 ## Egress proxies
 
-Optional, and off by default. When it is on, every model call leaves through one of your own HTTP proxies instead of directly.
+On by default. When it is on, every model call leaves through one of your own proxies instead of directly. It fails closed: with no usable proxy configured, calls fail instead of going direct.
 
 ```json
 {
@@ -176,22 +176,25 @@ Optional, and off by default. When it is on, every model call leaves through one
 
 | Key | Default | Purpose |
 |---|---|---|
-| `egress.mode` | `off` | `on` routes every coder and reviewer call through an exit. |
-| `egress.proxiesFile` | empty | Where the proxy list is. Either a plain list, one per line, or an env file with a `FREELOADER_PROXIES=` or `PI_SWARM_PROXIES=` line. The `FREELOADER_PROXIES` and `FREELOADER_PROXIES_FILE` environment variables override it. |
-| `egress.countries` | empty | Use only exits tagged with one of these countries. |
+| `egress.mode` | `on` | `off` sends coder and reviewer calls direct. `on` routes every call through an exit and fails closed with no usable proxy. |
+| `egress.proxiesFile` | empty | Where the proxy list is. Plain list, env file with a `FREELOADER_PROXIES=`/`PI_SWARM_PROXIES=` line, or JSON array (`["socks5://...#US", {"url":"...","country":"DE"}]`). Env `FREELOADER_PROXIES(_FILE)` / `PI_SWARM_PROXIES(_FILE)` overrides it. |
+| `egress.countries` | empty | Use only exits tagged with one of these countries. Env `PI_SWARM_EGRESS_COUNTRIES` is the fallback when this is empty. |
 | `egress.retrySec` | `300` | How long an exit that failed to connect is left alone. |
+| `egress.rotateOnQuota` | `true` | On a provider rate limit, move the sticky exit to a different live proxy so the next attempt leaves through a fresh origin. Set `false` to keep one exit until it stops connecting. |
 
-Proxy entries are `http://` or `https://` URLs, optionally tagged with a two-letter country as `US=http://user:pass@host:port` or `http://user:pass@host:port#US`. SOCKS proxies are not supported. Keep the list out of your repository: it contains credentials.
+Proxy entries are `http://`, `https://`, `socks://`, `socks5://` or `socks5h://` URLs, optionally tagged with a two-letter country as `US=http://user:pass@host:port`, `http://user:pass@host:port#US`, `http://host:port#country=US` or `http://host:port?country=US`. Keep the list out of your repository: it contains credentials.
+
+Pool semantics mirror pi-swarm: the parser (`scripts/egress-parse.js`) is derived from the vendored `vendor/pi-swarm/egress.ts`, and the forwarder (`scripts/egress-forward.js`) tunnels `CONNECT` and plain HTTP through HTTP or SOCKS5 upstreams.
 
 How an exit is chosen:
 
 - One exit is picked at random and then kept, for every task in the repository, so a build has one consistent origin.
-- It is replaced only when the exit itself stops connecting. A rate limit or a refusal from a model provider never changes the exit; those are handled by moving to another model, as usual.
+- It is replaced when the exit itself stops connecting, and (unless `egress.rotateOnQuota` is `false`) after a provider rate limit, so the next attempt leaves through a fresh proxy. A refusal never changes the exit; those are handled by moving to another model, as usual.
 - It fails closed. If no exit matches `countries`, or every exit is down, the call fails. Nothing is sent directly.
 
 Credentials never reach the models. Each call gets a small forwarder on `127.0.0.1` that holds the proxy's username and password, and the agent is pointed at that. An agent that prints its own environment sees only a local address. Results and the ledger record a label such as `US-3f2a`, never a host. Using egress needs `node` on your PATH.
 
-Two limits to be clear about. A proxy does not raise anyone's quota, since providers meter by API key. And an agent with a shell can still read files on your disk, including the proxy list itself if it goes looking; the forwarder keeps credentials out of the environment, not out of reach of a determined model. See [Safety](#safety).
+Two limits to be clear about. A proxy does not raise anyone's quota, since providers meter by API key: rotating the exit on a rate limit helps only with IP-based throttling, not with a spent key. And an agent with a shell can still read files on your disk, including the proxy list itself if it goes looking; the forwarder keeps credentials out of the environment, not out of reach of a determined model. See [Safety](#safety).
 
 ## Scripts
 

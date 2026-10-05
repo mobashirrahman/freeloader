@@ -29,7 +29,7 @@ jobs:
       - name: ShellCheck
         run: shellcheck --severity=warning scripts/*.sh tests/run.sh tests/stub/opencode
       - name: Forwarder parses
-        run: node --check scripts/egress-forward.js
+        run: node --check scripts/egress-forward.js && node --check scripts/egress-parse.js
       - name: JSON files parse
         run: |
           for f in .claude-plugin/*.json freeloader.config.default.json; do
