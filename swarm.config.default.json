@@ -1,0 +1,74 @@
+{
+  "coder": {
+    "models": [
+      "opencode/muse-spark-1.3-contributor-free",
+      "opencode/nemotron-3-ultra-free",
+      "opencode/longcat-2.5-preview-free"
+    ],
+    "roundsPerModel": 3,
+    "maxAttempts": 6,
+    "timeoutSec": 900,
+    "shellDeny": [
+      "git push*",
+      "git commit*",
+      "git reset*",
+      "git checkout*",
+      "git switch*",
+      "git merge*",
+      "git rebase*",
+      "git worktree*",
+      "curl*",
+      "wget*",
+      "ssh*",
+      "scp*",
+      "sudo*"
+    ],
+    "autoOrder": true
+  },
+  "reviewer": {
+    "models": [
+      "opencode/space-bunny-free",
+      "opencode/nemotron-3.5-lightning-free"
+    ],
+    "required": false,
+    "timeoutSec": 300,
+    "maxDiffBytes": 60000
+  },
+  "gate": {
+    "commands": [],
+    "timeoutSec": 600,
+    "feedbackLines": 50
+  },
+  "worktree": {
+    "setup": []
+  },
+  "scope": {
+    "ignore": [
+      "*__pycache__*",
+      "*.pyc",
+      "*.pytest_cache*",
+      "*.ruff_cache*",
+      "*.mypy_cache*",
+      "*node_modules*",
+      "*.DS_Store"
+    ],
+    "protect": []
+  },
+  "quota": {
+    "cooldownSec": 1800
+  },
+  "tiers": {
+    "easy": {
+      "race": 1,
+      "models": []
+    },
+    "normal": {
+      "race": 2,
+      "models": []
+    },
+    "hard": {
+      "race": 3,
+      "models": []
+    }
+  }
+}

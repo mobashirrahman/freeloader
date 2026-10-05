@@ -1,0 +1,14 @@
+{
+  "name": "swarm",
+  "version": "0.2.0",
+  "description": "Plan with Opus, orchestrate with Sonnet, and have free opencode models write and review the code behind an objective test gate.",
+  "author": {
+    "name": "Mobashir Rahman"
+  },
+  "keywords": [
+    "orchestration",
+    "opencode",
+    "subagents",
+    "cost"
+  ]
+}
