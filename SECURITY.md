@@ -9,7 +9,9 @@ freeloader runs third-party models unattended, with shell access, against your c
 - The shell deny list matches command prefixes. A determined or confused model can get around it, for example by wrapping a command in `bash -c`. Treat it as a guardrail against accidents, not as containment.
 - Your code is sent to whichever model providers you configure. Free tiers often log or train on what they receive.
 
-If either point matters for your situation, run freeloader inside a container or VM, and keep it away from repositories and machines that hold secrets.
+- If you turn on egress proxies, the proxy credentials are kept out of the agents' environment and out of every log, but the file holding them is still on a disk that the coder's shell can read.
+
+If any of these matter for your situation, run freeloader inside a container or VM, and keep it away from repositories and machines that hold secrets.
 
 ## Reporting a vulnerability
 

@@ -4,7 +4,7 @@ Bug reports, ideas, and pull requests are all welcome. This is a small project, 
 
 ## Getting set up
 
-You need `git`, `jq`, and bash. You do not need opencode or any model access to work on the scripts: the test suite replaces opencode with a stand-in.
+You need `git`, `jq`, bash, and `node` (only the egress tests use it). You do not need opencode or any model access to work on the scripts: the test suite replaces opencode with a stand-in.
 
 ```
 git clone https://github.com/mobashirrahman/freeloader

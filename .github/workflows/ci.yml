@@ -28,6 +28,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: ShellCheck
         run: shellcheck --severity=warning scripts/*.sh tests/run.sh tests/stub/opencode
+      - name: Forwarder parses
+        run: node --check scripts/egress-forward.js
       - name: JSON files parse
         run: |
           for f in .claude-plugin/*.json freeloader.config.default.json; do

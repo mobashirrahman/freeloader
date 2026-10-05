@@ -7,6 +7,7 @@ The [README](../README.md) covers what freeloader is and how to start. This page
 - [Results](#results)
 - [Configuration](#configuration)
 - [What the models can do](#what-the-models-can-do)
+- [Egress proxies](#egress-proxies)
 - [Scripts](#scripts)
 - [What it leaves in your repository](#what-it-leaves-in-your-repository)
 - [Safety](#safety)
@@ -85,7 +86,7 @@ On a failure, `detail` holds the last feedback the coder was given and `worktree
 
 ## Configuration
 
-Defaults live in [`freeloader.config.default.json`](../freeloader.config.default.json). To change one, create `freeloader.config.json` at your repository root with only the keys you want to override.
+Defaults live in [`freeloader.config.default.json`](../freeloader.config.default.json). To change one, create `freeloader.config.json` at your repository root with only the keys you want to override. Settings you want everywhere go in `~/.config/freeloader/config.json`, which is read first; the repository's file wins where both set a key.
 
 ```json
 {
@@ -158,6 +159,39 @@ Fetched pages are untrusted input to an agent with a shell. Both prompts tell th
 opencode's free tier does not accept every request. At the time of writing, custom agents are widely reported not to work on it, and in testing it refused the read-only reviewer profile on most free models while accepting the coder profile. freeloader treats a refusal like a rate limit: the model is skipped for `quota.cooldownSec` and the next one is tried.
 
 If no reviewer model accepts, the review is recorded as `skipped` and the task is merged on the acceptance gate alone, unless `reviewer.required` is `true`. `/freeloader:doctor --ping` shows which models are answering in which role.
+
+## Egress proxies
+
+Optional, and off by default. When it is on, every model call leaves through one of your own HTTP proxies instead of directly.
+
+```json
+{
+  "egress": {
+    "mode": "on",
+    "proxiesFile": "/path/to/proxies.env",
+    "countries": ["US"]
+  }
+}
+```
+
+| Key | Default | Purpose |
+|---|---|---|
+| `egress.mode` | `off` | `on` routes every coder and reviewer call through an exit. |
+| `egress.proxiesFile` | empty | Where the proxy list is. Either a plain list, one per line, or an env file with a `FREELOADER_PROXIES=` or `PI_SWARM_PROXIES=` line. The `FREELOADER_PROXIES` and `FREELOADER_PROXIES_FILE` environment variables override it. |
+| `egress.countries` | empty | Use only exits tagged with one of these countries. |
+| `egress.retrySec` | `300` | How long an exit that failed to connect is left alone. |
+
+Proxy entries are `http://` or `https://` URLs, optionally tagged with a two-letter country as `US=http://user:pass@host:port` or `http://user:pass@host:port#US`. SOCKS proxies are not supported. Keep the list out of your repository: it contains credentials.
+
+How an exit is chosen:
+
+- One exit is picked at random and then kept, for every task in the repository, so a build has one consistent origin.
+- It is replaced only when the exit itself stops connecting. A rate limit or a refusal from a model provider never changes the exit; those are handled by moving to another model, as usual.
+- It fails closed. If no exit matches `countries`, or every exit is down, the call fails. Nothing is sent directly.
+
+Credentials never reach the models. Each call gets a small forwarder on `127.0.0.1` that holds the proxy's username and password, and the agent is pointed at that. An agent that prints its own environment sees only a local address. Results and the ledger record a label such as `US-3f2a`, never a host. Using egress needs `node` on your PATH.
+
+Two limits to be clear about. A proxy does not raise anyone's quota, since providers meter by API key. And an agent with a shell can still read files on your disk, including the proxy list itself if it goes looking; the forwarder keeps credentials out of the environment, not out of reach of a determined model. See [Safety](#safety).
 
 ## Scripts
 

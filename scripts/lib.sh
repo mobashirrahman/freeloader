@@ -43,12 +43,13 @@ load_repo() {
     export GIT_AUTHOR_NAME=freeloader GIT_AUTHOR_EMAIL=freeloader@localhost
     export GIT_COMMITTER_NAME=freeloader GIT_COMMITTER_EMAIL=freeloader@localhost
   fi
-  if [ -f "$REPO/freeloader.config.json" ]; then
-    CFG="$(jq -s '.[0] * .[1]' "$FL_ROOT/freeloader.config.default.json" "$REPO/freeloader.config.json")" \
-      || die "freeloader.config.json is not valid JSON"
-  else
-    CFG="$(cat "$FL_ROOT/freeloader.config.default.json")"
-  fi
+  # Defaults, then the user's own settings, then the repository's.
+  CFG="$(cat "$FL_ROOT/freeloader.config.default.json")"
+  local extra
+  for extra in "${XDG_CONFIG_HOME:-$HOME/.config}/freeloader/config.json" "$REPO/freeloader.config.json"; do
+    [ -f "$extra" ] || continue
+    CFG="$(jq -s '.[0] * .[1]' <(printf '%s' "$CFG") "$extra")" || die "$extra is not valid JSON"
+  done
 }
 
 cfg() { jq -r "$1" <<<"$CFG"; }
@@ -88,24 +89,48 @@ build_role_configs() {
 
 # run_opencode <coder|reviewer> <model> <timeout-sec> <log-file> <prompt>
 # Runs in the current directory. Sets OC_STATUS to ok | quota | refused | timeout |
-# error, OC_TEXT to the model's text output, and OC_ERROR to the provider's message.
+# error, OC_TEXT to the model's text output, OC_ERROR to the provider's message,
+# and OC_EGRESS to the label of the exit used, if any.
 # "refused" is the provider declining to serve this request at all, which is how
 # opencode's free tier answers requests it does not accept.
 run_opencode() {
-  local role=$1 model=$2 secs=$3 log=$4 prompt=$5 rc=0 etype config
+  local role=$1 model=$2 secs=$3 log=$4 prompt=$5 rc etype config tries=0
   if [ "$role" = coder ]; then config="$CODER_CONFIG"; else config="$REVIEWER_CONFIG"; fi
   prompt="$(cat "$FL_ROOT/opencode/$role.md")
 
 $prompt"
-  # An empty config dir keeps the user's global MCP servers and plugins out of the run.
-  FREELOADER_ROLE="$role" \
-  OPENCODE_CONFIG_DIR="$FL_ROOT/opencode/config" \
-  OPENCODE_CONFIG_CONTENT="$config" \
-    with_timeout "$secs" opencode run --standalone --agent build -m "$model" \
-      --auto --format json "$prompt" >"$log" 2>&1 </dev/null || rc=$?
+  OC_EGRESS=""
+  while :; do
+    rc=0
+    if [ "${EGRESS_ON:-0}" -eq 1 ]; then
+      if ! egress_start; then
+        OC_STATUS=error
+        OC_TEXT=""
+        OC_ERROR="no egress exit is available, and egress is set to fail closed"
+        return 0
+      fi
+      OC_EGRESS="$EG_LABEL"
+      HTTPS_PROXY="http://127.0.0.1:$EG_PORT" HTTP_PROXY="http://127.0.0.1:$EG_PORT" \
+      https_proxy="http://127.0.0.1:$EG_PORT" http_proxy="http://127.0.0.1:$EG_PORT" \
+      NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1" \
+        opencode_exec "$role" "$model" "$secs" "$log" "$config" "$prompt" || rc=$?
+      egress_stop
+    else
+      opencode_exec "$role" "$model" "$secs" "$log" "$config" "$prompt" || rc=$?
+    fi
+    etype="$(jq -rR 'fromjson? | select(.type=="error") | .error.type' "$log" 2>/dev/null | head -1)"
+    # A transport error with nothing getting through the exit means the exit is
+    # dead, not the model. Retire it and try another; never fall back to direct.
+    if [ "${EGRESS_ON:-0}" -eq 1 ] && [ "$etype" = "provider.transport" ] \
+      && ! grep -q '^ok' "$EG_LOG" 2>/dev/null && [ "$tries" -lt 2 ]; then
+      egress_mark_dead "$EG_ID"
+      tries=$((tries + 1))
+      continue
+    fi
+    break
+  done
   # shellcheck disable=SC2034  # read by the callers
   OC_TEXT="$(jq -rR 'fromjson? | select(.type=="text") | .part.text' "$log" 2>/dev/null || true)"
-  etype="$(jq -rR 'fromjson? | select(.type=="error") | .error.type' "$log" 2>/dev/null | head -1)"
   # shellcheck disable=SC2034  # read by the callers
   OC_ERROR="$(jq -rR 'fromjson? | select(.type=="error") | .error.message' "$log" 2>/dev/null | head -1 | cut -c 1-200)"
   if is_timeout_rc "$rc"; then
@@ -123,6 +148,135 @@ $prompt"
     quota|refused) mark_cooldown "$model" ;;
     ok) clear_cooldown "$model" ;;
   esac
+}
+
+opencode_exec() {
+  # An empty config dir keeps the user's global MCP servers and plugins out of the run.
+  FREELOADER_ROLE="$1" \
+  OPENCODE_CONFIG_DIR="$FL_ROOT/opencode/config" \
+  OPENCODE_CONFIG_CONTENT="$5" \
+    with_timeout "$3" opencode run --standalone --agent build -m "$2" \
+      --auto --format json "$6" >"$4" 2>&1 </dev/null
+}
+
+# --- egress ------------------------------------------------------------------
+# Optional: send every model call through one of the user's own HTTP proxies.
+# An exit is picked at random and then kept, across tasks, until it stops
+# working. It is replaced only when the exit itself fails to connect, never in
+# response to a rate limit or a refusal from a provider.
+#
+# Proxy URLs carry credentials, so they are never logged or put in the agent's
+# environment. Each call gets a forwarder on 127.0.0.1 (egress-forward.js) that
+# holds them; everything else sees only a label such as "US-3f2a".
+
+# Sets EGRESS_ON and EGRESS_LIST (one "id<TAB>country<TAB>url" per line).
+load_egress() {
+  EGRESS_ON=0
+  EGRESS_LIST=""
+  [ "$(cfg '.egress.mode')" = on ] || return 0
+  need node
+  local raw="${FREELOADER_PROXIES:-}" file line entry country url id want
+  file="${FREELOADER_PROXIES_FILE:-$(cfg '.egress.proxiesFile // ""')}"
+  if [ -z "$raw" ] && [ -n "$file" ]; then
+    [ -r "$file" ] || die "egress: cannot read proxies file $file"
+    # Either an env file with a FREELOADER_PROXIES= or PI_SWARM_PROXIES= line, or a plain list.
+    line="$(grep -E '^(export[[:space:]]+)?(FREELOADER_PROXIES|PI_SWARM_PROXIES)=' "$file" | head -1)"
+    if [ -n "$line" ]; then
+      raw="$(printf '%s' "${line#*=}" | unquote)"
+    else
+      raw="$(grep -v '^[[:space:]]*#' "$file")"
+    fi
+  fi
+  # The list is now held in this shell only. Drop it from the environment so that
+  # no child process, least of all an agent with a shell, inherits it.
+  unset FREELOADER_PROXIES FREELOADER_PROXIES_FILE PI_SWARM_PROXIES PI_SWARM_PROXIES_FILE
+  want="$(cfg '.egress.countries // [] | map(ascii_upcase) | .[]')"
+  while IFS= read -r entry; do
+    entry="$(printf '%s' "$entry" | tr -d '[:space:]')"
+    [ -n "$entry" ] || continue
+    country=""
+    url="$entry"
+    case "$entry" in
+      [A-Za-z][A-Za-z]=*) country="${entry%%=*}"; url="${entry#*=}" ;;
+      *"#"*) country="${entry##*#}"; country="${country#country=}"; url="${entry%%#*}" ;;
+    esac
+    case "$url" in http://*|https://*) ;; *) continue ;; esac
+    country="$(printf '%s' "$country" | tr '[:lower:]' '[:upper:]')"
+    case "$country" in [A-Z][A-Z]) ;; *) country="" ;; esac
+    # A country filter is strict: an untagged exit never stands in for a requested one.
+    if [ -n "$want" ] && ! grep -qxF "$country" <<<"$want"; then continue; fi
+    id="$(printf '%s' "$url" | cksum | cut -d' ' -f1)"
+    EGRESS_LIST="$EGRESS_LIST$id	$country	$url
+"
+  done <<<"$(printf '%s' "$raw" | tr ',' '\n')"
+  [ -n "$EGRESS_LIST" ] || die "egress is on but no usable proxy was found (check egress.proxiesFile and egress.countries)"
+  EGRESS_ON=1
+}
+
+egress_label() { # <id> <country>
+  printf '%s-%04x' "${2:-XX}" "$(($1 % 65536))"
+}
+
+egress_is_dead() {
+  local until
+  until="$(cat "$FL_DIR/state/egress-dead/$1" 2>/dev/null)"
+  case "$until" in ""|*[!0-9]*) return 1 ;; esac
+  [ "$(date +%s)" -lt "$until" ]
+}
+
+egress_mark_dead() {
+  mkdir -p "$FL_DIR/state/egress-dead"
+  echo $(($(date +%s) + $(cfg '.egress.retrySec'))) >"$FL_DIR/state/egress-dead/$1"
+}
+
+# Picks the exit to use: the current one if it is still listed and alive,
+# otherwise a random live one, which then becomes current. Sets EG_ID,
+# EG_COUNTRY, EG_URL; fails when no exit is alive.
+egress_pick() {
+  local current alive="" id country url n pick
+  current="$(cat "$FL_DIR/state/egress-current" 2>/dev/null)"
+  while IFS='	' read -r id country url; do
+    [ -n "$id" ] || continue
+    egress_is_dead "$id" && continue
+    if [ "$id" = "$current" ]; then
+      EG_ID=$id EG_COUNTRY=$country EG_URL=$url
+      return 0
+    fi
+    alive="$alive$id	$country	$url
+"
+  done <<<"$EGRESS_LIST"
+  n="$(printf '%s' "$alive" | grep -c .)"
+  [ "$n" -gt 0 ] || return 1
+  pick=$(($(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % n + 1))
+  IFS='	' read -r EG_ID EG_COUNTRY EG_URL <<<"$(printf '%s' "$alive" | sed -n "${pick}p")"
+  mkdir -p "$FL_DIR/state"
+  echo "$EG_ID" >"$FL_DIR/state/egress-current"
+}
+
+# Starts a forwarder for the picked exit. Sets EG_PORT, EG_PID, EG_LOG, EG_LABEL.
+egress_start() {
+  local dir waited=0
+  egress_pick || return 1
+  EG_LABEL="$(egress_label "$EG_ID" "$EG_COUNTRY")"
+  dir="$(mktemp -d)"
+  EG_LOG="$dir/log"
+  FREELOADER_UPSTREAM_PROXY="$EG_URL" node "$FL_ROOT/scripts/egress-forward.js" >"$dir/port" 2>"$EG_LOG" &
+  EG_PID=$!
+  EG_URL=""
+  until [ -s "$dir/port" ]; do
+    kill -0 "$EG_PID" 2>/dev/null || return 1
+    [ "$waited" -lt 50 ] || { kill "$EG_PID" 2>/dev/null; return 1; }
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  EG_PORT="$(cat "$dir/port")"
+}
+
+egress_stop() {
+  [ -n "${EG_PID:-}" ] || return 0
+  kill "$EG_PID" 2>/dev/null
+  wait "$EG_PID" 2>/dev/null
+  EG_PID=""
 }
 
 # --- quota cooldown ----------------------------------------------------------

@@ -7,6 +7,9 @@
 #                      (pass or fail); once they run out it passes.
 #   FAKE_QUOTA_MODELS  comma-separated models that answer with a rate limit.
 #   FAKE_REFUSE_ROLES  comma-separated roles (coder, reviewer) the provider refuses.
+#   FAKE_PROBE         when set, make one request through the configured proxy, as
+#                      a real model call would, and fail like opencode does if
+#                      nothing answers.
 #   FAKE_STATE         directory for the call log and the review counter.
 
 model="" prev="" prompt=""
@@ -28,6 +31,14 @@ case ",${FAKE_QUOTA_MODELS:-}," in
 esac
 
 echo "$FREELOADER_ROLE $OPENCODE_CONFIG_CONTENT" >>"$FAKE_STATE/configs"
+
+echo "$FREELOADER_ROLE ${HTTPS_PROXY:-direct}" >>"$FAKE_STATE/proxies"
+if [ -n "${FAKE_PROBE:-}" ] && [ -n "${HTTP_PROXY:-}" ]; then
+  if [ "$(curl -s -m 5 -x "$HTTP_PROXY" http://probe.test/ping)" != pong ]; then
+    echo '{"type":"error","error":{"type":"provider.transport","message":"ConnectionRefused"}}'
+    exit 1
+  fi
+fi
 
 case ",${FAKE_REFUSE_ROLES:-}," in
   *",$FREELOADER_ROLE,"*)

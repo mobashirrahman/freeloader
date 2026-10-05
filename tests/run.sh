@@ -17,6 +17,9 @@ export PATH="$ROOT/tests/stub:$PATH"
 export FAKE_STATE="$TMP/state"
 # The suite must not depend on, or write to, the developer's git identity.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# Nor on their own freeloader settings or proxies.
+export XDG_CONFIG_HOME="$TMP/xdg"
+unset FREELOADER_PROXIES FREELOADER_PROXIES_FILE
 
 PASSED=0
 FAILED=0
@@ -307,6 +310,94 @@ refused_reviewer_leaves_it_to_the_gate() {
   eq "refusing reviewers are not asked again" "" "$(grep '^reviewer' "$FAKE_STATE/calls")"
 }
 
+# --- egress ------------------------------------------------------------------
+
+# Starts a fake authenticated proxy and sets UP_PORT and UP_LOG.
+start_upstream() {
+  UP_LOG="$TMP/upstream-$RANDOM.log"
+  : >"$UP_LOG"
+  node "$ROOT/tests/stub/upstream-proxy.js" "user:s3cret" "$UP_LOG" >"$TMP/upstream.port" &
+  UP_PID=$!
+  until [ -s "$TMP/upstream.port" ]; do sleep 0.1; done
+  UP_PORT="$(cat "$TMP/upstream.port")"
+  rm -f "$TMP/upstream.port"
+}
+
+stop_upstream() {
+  kill "$UP_PID" 2>/dev/null
+  wait "$UP_PID" 2>/dev/null
+}
+
+egress_keeps_credentials_from_the_agent() {
+  start_upstream
+  new_repo '{"egress":{"mode":"on"},"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  task b 'test -f b.txt' b.txt
+  local out
+  out="$(FREELOADER_PROXIES="US=http://user:s3cret@127.0.0.1:$UP_PORT" FAKE_PROBE=1 FAKE_CODER_CMD='env > "$FAKE_STATE/agent-env"; echo x > a.txt' run f "$PLAN/a.md")"
+  eq status pass "$(field .status "$out")"
+  has "labelled by country" "US-" "$(field .egress "$out")"
+  has "upstream got the credentials" "ok http://probe.test/ping" "$(cat "$UP_LOG")"
+  eq "agent pointed at the local forwarder" "" "$(grep -v '^[a-z]* http://127.0.0.1:[0-9]*$' "$FAKE_STATE/proxies")"
+  has "agent environment was captured" "HTTPS_PROXY=http://127.0.0.1:" "$(cat "$FAKE_STATE/agent-env")"
+  eq "no credentials in the agent environment, logs, or state" "" "$(grep -rl s3cret "$FAKE_STATE" .freeloader 2>/dev/null)"
+  local first
+  first="$(field .egress "$out")"
+  out="$(FREELOADER_PROXIES="US=http://user:s3cret@127.0.0.1:$UP_PORT,DE=http://user:s3cret@127.0.0.1:1" FAKE_PROBE=1 FAKE_CODER_CMD='echo x > b.txt' run f "$PLAN/b.md")"
+  eq "same exit kept for the next task" "$first" "$(field .egress "$out")"
+  stop_upstream
+}
+
+egress_replaces_a_dead_exit() {
+  start_upstream
+  new_repo '{"egress":{"mode":"on"},"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  local dead="http://user:s3cret@127.0.0.1:1" live="http://user:s3cret@127.0.0.1:$UP_PORT" out
+  # Make the dead exit the current one, as if it had worked earlier.
+  mkdir -p .freeloader/state
+  printf '%s' "$dead" | cksum | cut -d' ' -f1 >.freeloader/state/egress-current
+  out="$(FREELOADER_PROXIES="DE=$dead,US=$live" FAKE_PROBE=1 FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
+  eq status pass "$(field .status "$out")"
+  has "moved to the live exit" "US-" "$(field .egress "$out")"
+  eq "dead exit not counted as an attempt" 1 "$(field .attempts "$out")"
+  stop_upstream
+}
+
+egress_stays_put_on_a_rate_limit() {
+  start_upstream
+  new_repo '{"egress":{"mode":"on"},"coder":{"models":["m/limited","m/good"]},"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  local out
+  out="$(FREELOADER_PROXIES="US=http://user:s3cret@127.0.0.1:$UP_PORT,DE=http://user:s3cret@127.0.0.1:$UP_PORT/" FAKE_QUOTA_MODELS=m/limited FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
+  eq status pass "$(field .status "$out")"
+  eq "one exit used throughout" 1 "$(jq -r 'select(.kind == "attempt") | .egress' .freeloader/ledger.jsonl | sort -u | grep -c .)"
+  stop_upstream
+}
+
+egress_country_filter_fails_closed() {
+  start_upstream
+  new_repo '{"egress":{"mode":"on","countries":["us"]},"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  local list="DE=http://user:s3cret@127.0.0.1:1,http://user:s3cret@127.0.0.1:1/untagged,US=http://user:s3cret@127.0.0.1:$UP_PORT" out
+  out="$(FREELOADER_PROXIES="$list" FAKE_PROBE=1 FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
+  has "only the requested country" "US-" "$(field .egress "$out")"
+  echo '{"egress":{"mode":"on","countries":["JP"]}}' >freeloader.config.json
+  out="$(FREELOADER_PROXIES="$list" run --force f "$PLAN/a.md")"
+  eq "no matching exit is an error" error "$(field .status "$out")"
+  eq "and nothing went out directly" "" "$(grep direct "$FAKE_STATE/proxies")"
+  stop_upstream
+}
+
+egress_is_off_by_default() {
+  new_repo '{"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  local out
+  out="$(FREELOADER_PROXIES="US=http://user:s3cret@127.0.0.1:1" FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
+  eq status pass "$(field .status "$out")"
+  eq "no egress recorded" null "$(field .egress "$out")"
+  eq "calls went direct" "" "$(grep -v direct "$FAKE_STATE/proxies")"
+}
+
 # --- parallel tasks ----------------------------------------------------------
 
 parallel_conflict_then_rerun() {
@@ -382,6 +473,11 @@ t "models: tier sets lanes and models" tier_sets_lanes_and_models
 t "models: better model goes first" better_model_goes_first
 t "models: permissions follow the config" permissions_follow_the_config
 t "models: refused reviewer leaves it to the gate" refused_reviewer_leaves_it_to_the_gate
+t "egress: credentials stay out of the agent, exit is kept" egress_keeps_credentials_from_the_agent
+t "egress: a dead exit is replaced" egress_replaces_a_dead_exit
+t "egress: a rate limit does not change the exit" egress_stays_put_on_a_rate_limit
+t "egress: country filter fails closed" egress_country_filter_fails_closed
+t "egress: off by default" egress_is_off_by_default
 t "parallel: conflict, then rerun" parallel_conflict_then_rerun
 t "parallel: pass alone, fail together" parallel_pass_alone_fail_together
 t "status: tracks progress" status_tracks_progress

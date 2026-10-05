@@ -95,6 +95,21 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cd "$TMP" || exit 2
 build_role_configs
+
+if [ "$(cfg '.egress.mode')" = on ]; then
+  load_egress
+  ok "egress on: $(printf '%s' "$EGRESS_LIST" | grep -c .) exits ($(printf '%s' "$EGRESS_LIST" | cut -f2 | sort | uniq -c | awk '{printf "%s%s x%s", sep, ($2 == "" ? "untagged" : $2), $1; sep = ", "}'))"
+  if [ "$PING" -eq 1 ] && [ -n "${FL_DIR:-}" ]; then
+    if egress_start; then
+      code="$(curl -s -m 20 -o /dev/null -w '%{http_code}' -x "http://127.0.0.1:$EG_PORT" https://opencode.ai 2>/dev/null)"
+      egress_stop
+      if [ "$code" = 200 ]; then ok "egress exit $EG_LABEL reaches opencode.ai"; else warn "egress exit $EG_LABEL did not reach opencode.ai (HTTP $code)"; fi
+    else
+      problem "egress is on but no exit could be started"
+    fi
+  fi
+fi
+
 check_models coder '.coder.models[]'
 check_models reviewer '.reviewer.models[]'
 for tier in easy normal hard; do

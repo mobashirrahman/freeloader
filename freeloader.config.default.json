@@ -73,5 +73,11 @@
       "race": 3,
       "models": []
     }
+  },
+  "egress": {
+    "mode": "off",
+    "proxiesFile": "",
+    "countries": [],
+    "retrySec": 300
   }
 }

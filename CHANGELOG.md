@@ -2,6 +2,13 @@
 
 Notable changes to this project. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Egress proxies: model calls can be sent through your own HTTP proxies, with a country filter. One exit is kept for the whole repository and replaced only when it stops connecting. Credentials stay in a local forwarder and never reach the agent's environment or the logs. Off by default.
+- User-level settings in `~/.config/freeloader/config.json`, applied before a repository's own `freeloader.config.json`.
+
 ## [1.0.0] - 2026-10-05
 
 First stable release. The task runner is unchanged from 0.3.0.

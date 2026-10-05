@@ -41,6 +41,7 @@ TASK="$(cd "$(dirname "$TASK")" && pwd)/$(basename "$TASK")"
 
 load_repo
 build_role_configs
+load_egress
 
 # --- task file ---------------------------------------------------------------
 
@@ -113,6 +114,7 @@ REVIEW="none"
 ISSUES="[]"
 CHANGED=""
 COMMIT=""
+EGRESS=""
 WT="$(lane_wt 1)"
 BRANCH="$(lane_branch 1)"
 RUN="$RUN_ROOT"
@@ -124,12 +126,13 @@ emit() {
     --argjson lanes "$LANES" --argjson seconds "$(($(date +%s) - START))" \
     --arg branch "$BRANCH" --arg worktree "$WT" --arg commit "$COMMIT" \
     --arg review "$REVIEW" --argjson issues "$ISSUES" \
-    --arg files "$CHANGED" --arg detail "$DETAIL" --arg logs "$RUN_ROOT" '
+    --arg files "$CHANGED" --arg detail "$DETAIL" --arg logs "$RUN_ROOT" --arg egress "$EGRESS" '
     {status: $status, id: $id, feature: $feature, tier: $tier, stage: $stage, model: $model,
      attempts: $attempts, lanes: $lanes, seconds: $seconds, branch: $branch,
      worktree: $worktree, commit: $commit, review: $review, issues: $issues,
      files: ($files | split("\n") | map(select(. != ""))),
-     detail: $detail[0:1500], logs: $logs}')"
+     detail: $detail[0:1500], logs: $logs}
+     + (if $egress == "" then {} else {egress: $egress} end)')"
   if [ "$IN_LANE" -eq 0 ]; then
     printf '%s\n' "$json" >"$RUN_ROOT/result.json"
     ledger "$(jq -c '{ts: (now | floor), kind: "task", feature, id, tier, status, stage, model, attempts, lanes, seconds}' <<<"$json")"
@@ -319,6 +322,7 @@ lane_main() {
       t0="$(date +%s)"
       run_opencode coder "$model" "$CODER_TIMEOUT" "$RUN/coder-$ATTEMPTS.jsonl" \
         "$(coder_prompt "$FEEDBACK")"
+      EGRESS="${OC_EGRESS:-}"
       if [ "$OC_STATUS" = quota ] || [ "$OC_STATUS" = refused ] || [ "$OC_STATUS" = error ]; then
         STAGE=coder
         FEEDBACK="coder model $model failed: $OC_STATUS${OC_ERROR:+ ($OC_ERROR)}"
@@ -350,9 +354,10 @@ $FEEDBACK"
 
 ledger_attempt() {
   ledger "$(jq -cn --arg feature "$FEATURE" --arg id "$ID" --arg tier "$TIER" --arg model "$1" \
-    --arg outcome "$2" --argjson seconds "$(($(date +%s) - $3))" \
+    --arg outcome "$2" --argjson seconds "$(($(date +%s) - $3))" --arg egress "${EGRESS:-}" \
     '{ts: (now | floor), kind: "attempt", feature: $feature, id: $id, tier: $tier,
-      model: $model, outcome: $outcome, seconds: $seconds}')"
+      model: $model, outcome: $outcome, seconds: $seconds}
+     + (if $egress == "" then {} else {egress: $egress} end)')"
 }
 
 remove_lane() {
@@ -492,6 +497,7 @@ else
   ISSUES="$(jq -c '.issues' <<<"$R")"
   CHANGED="$(jq -r '.files[]' <<<"$R")"
   COMMIT="$(jq -r '.commit' <<<"$R")"
+  EGRESS="$(jq -r '.egress // ""' <<<"$R")"
   FEEDBACK="$(jq -r '.detail // .error // ""' <<<"$R")"
   ATTEMPTS=$total
   RUN="$RUN_ROOT"
