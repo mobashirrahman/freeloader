@@ -106,6 +106,7 @@ run_opencode() {
   OPENCODE_CONFIG_CONTENT="$AGENTS_JSON" \
     with_timeout "$secs" opencode run --standalone --agent "$agent" -m "$model" \
       --auto --format json "$prompt" >"$log" 2>&1 </dev/null || rc=$?
+  # shellcheck disable=SC2034  # read by the callers
   OC_TEXT="$(jq -rR 'fromjson? | select(.type=="text") | .part.text' "$log" 2>/dev/null || true)"
   etype="$(jq -rR 'fromjson? | select(.type=="error") | .error.type' "$log" 2>/dev/null | head -1)"
   if is_timeout_rc "$rc"; then

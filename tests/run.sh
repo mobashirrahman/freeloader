@@ -76,6 +76,14 @@ run() { "$S/run-task.sh" "$@" 2>/dev/null; }
 field() { jq -r "$1" <<<"$2"; }
 on_main() { git show "freeloader/f/main:$1" 2>/dev/null; }
 
+# Worktrees still present for feature f, other than the feature's own.
+task_worktrees() {
+  local d
+  for d in .freeloader/worktrees/f/*; do
+    [ "$(basename "$d")" = _main ] || basename "$d"
+  done
+}
+
 t() { # <name> <function>
   case "$1" in *"$FILTER"*) ;; *) return 0 ;; esac
   CURRENT="$1"
@@ -137,7 +145,7 @@ task_passes() {
   eq status pass "$(field .status "$out")"
   eq review pass "$(field .review "$out")"
   eq "merged content" hello "$(on_main out.txt)"
-  eq "worktree removed" "" "$(ls .freeloader/worktrees/f | grep -v _main)"
+  eq "worktree removed" "" "$(task_worktrees)"
   eq "user checkout untouched" "" "$(git status --short | grep -v freeloader.config.json)"
 }
 
@@ -244,7 +252,7 @@ race_first_lane_to_pass_wins() {
   eq lanes 2 "$(field .lanes "$out")"
   eq winner m/fast "$(field .model "$out")"
   eq "merged content" m/fast "$(on_main out.txt)"
-  eq "loser worktrees removed" "" "$(ls .freeloader/worktrees/f | grep -v _main)"
+  eq "loser worktrees removed" "" "$(task_worktrees)"
   eq "loser branches removed" "" "$(git branch --list 'freeloader/f/a--r*')"
 }
 
@@ -313,7 +321,7 @@ depends:
   eq request "Build the thing" "$(field .request "$out")"
   eq "listed" f "$("$S/status.sh" | jq -r '.features[0].feature')"
   FAKE_CODER_CMD='echo x > b.txt' run f "$PLAN/b.md" >/dev/null
-  eq done true "$("$S/status.sh" f | jq -r .done)"
+  eq "done" true "$("$S/status.sh" f | jq -r .done)"
 }
 
 stats_count_attempts() {

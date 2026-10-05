@@ -46,6 +46,7 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     || warn "worktree.setup is empty; if tests need installed dependencies (npm ci, a venv), add the command to freeloader.config.json"
 else
   problem "not inside a git repository"
+  # shellcheck disable=SC2034  # read by cfg() in lib.sh
   CFG="$(cat "$FL_ROOT/freeloader.config.default.json")"
 fi
 

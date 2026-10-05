@@ -293,7 +293,7 @@ $(jq -r '.[] | "- \(.file // "?"): \(.problem // "") Fix: \(.fix // "")"' <<<"$I
 # lane_main <n> <newline-separated models>: runs in a background subshell. Works
 # through its models in its own worktree, commits on a pass, prints one JSON line.
 lane_main() {
-  local n=$1 models=$2 model round t0 outcome
+  local n=$1 models=$2 model round t0
   IN_LANE=1
   WT="$(lane_wt "$n")"
   BRANCH="$(lane_branch "$n")"
@@ -536,5 +536,5 @@ cd "$REPO" || true
 acquire_lock _git
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
 release_lock
-STAGE=done
+STAGE="done"
 emit pass
