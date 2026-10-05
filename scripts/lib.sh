@@ -106,6 +106,7 @@ $prompt"
   # shellcheck disable=SC2034  # read by the callers
   OC_TEXT="$(jq -rR 'fromjson? | select(.type=="text") | .part.text' "$log" 2>/dev/null || true)"
   etype="$(jq -rR 'fromjson? | select(.type=="error") | .error.type' "$log" 2>/dev/null | head -1)"
+  # shellcheck disable=SC2034  # read by the callers
   OC_ERROR="$(jq -rR 'fromjson? | select(.type=="error") | .error.message' "$log" 2>/dev/null | head -1 | cut -c 1-200)"
   if is_timeout_rc "$rc"; then
     OC_STATUS=timeout
