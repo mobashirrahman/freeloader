@@ -133,7 +133,7 @@ def freeloader_details(repo: Path) -> dict:
     }
 
 
-def run_one(arm: str, task: Path, total: int, work: Path, raw: Path, timeout: int) -> dict:
+def run_one(arm: str, task: Path, total: int, work: Path, raw: Path, timeout: int, plugin: Path) -> dict:
     spec = ARMS[arm]
     repo = work / arm / task.name / "repo"
     shutil.rmtree(repo.parent, ignore_errors=True)
@@ -145,7 +145,7 @@ def run_one(arm: str, task: Path, total: int, work: Path, raw: Path, timeout: in
     request = (task / "request.md").read_text().strip()
     command = ["claude", "--model", spec["model"], "--output-format", "json"]
     if spec["freeloader"]:
-        command += ["--plugin-dir", str(ROOT), "--allowedTools", FREELOADER_TOOLS,
+        command += ["--plugin-dir", str(plugin), "--allowedTools", FREELOADER_TOOLS,
                     "-p", "/freeloader:build " + request + FREELOADER_SUFFIX]
     else:
         command += ["--allowedTools", BASELINE_TOOLS, "-p", request + BASELINE_SUFFIX]
@@ -211,6 +211,8 @@ def main():
     parser.add_argument("--work", help="working directory (default: a new temporary one)")
     parser.add_argument("--jobs", type=int, default=1, help="sessions to run at once")
     parser.add_argument("--timeout", type=int, default=2400, help="seconds allowed per session")
+    parser.add_argument("--plugin-dir", default=str(ROOT),
+                        help="freeloader checkout to test (default: this one)")
     args = parser.parse_args()
 
     arms = args.arms.split(",")
@@ -221,18 +223,19 @@ def main():
     work = Path(args.work or tempfile.mkdtemp(prefix="freeloader-bench-")).resolve()
     (work / "xdg").mkdir(parents=True, exist_ok=True)
     out = Path(args.out).resolve()
-    raw = out.parent / "raw"
+    raw = out.parent / "raw" / out.stem
     raw.mkdir(parents=True, exist_ok=True)
     print(f"work directory: {work}", flush=True)
 
     pairs = [(arm, task) for arm in arms for task in tasks]
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(run_one, arm, task, totals[task.name], work, raw, args.timeout)
+        plugin = Path(args.plugin_dir).resolve()
+        futures = [pool.submit(run_one, arm, task, totals[task.name], work, raw, args.timeout, plugin)
                    for arm, task in pairs]
         results = [future.result() for future in futures]
 
     version = sh(["claude", "--version"]).stdout.strip()
-    commit = sh(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT).stdout.strip()
+    commit = sh(["git", "rev-parse", "--short", "HEAD"], cwd=args.plugin_dir).stdout.strip()
     out.write_text(json.dumps({
         "date": time.strftime("%Y-%m-%d"),
         "claude_code": version,

@@ -4,17 +4,39 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757.svg)](https://docs.claude.com/en/docs/claude-code/plugins)
 
-**Opus plans. Free models code. Tests decide.**
+**Claude plans. Free models code. Tests decide.**
 
-freeloader is a Claude Code plugin that hands the typing to free models. Opus breaks a feature into small tasks and writes the tests. Free models on [opencode](https://opencode.ai) race to implement each task. A shell script runs the tests and merges only what passes.
+freeloader is a Claude Code plugin that hands the typing to free models. Claude breaks a feature into small tasks and writes the tests. Free models on [opencode](https://opencode.ai) race to implement each task. A shell script runs the tests and merges only what passes.
 
-You spend Claude tokens on one plan and one final review. The part in between, which is where most of the tokens usually go, runs on free tiers.
+It started as a way to spend fewer Claude tokens. I then measured it, and the honest answer so far is below.
+
+## Does it save anything?
+
+Not on small tasks. I ran six requests, from a one-function helper to a query-language parser, through plain Claude Code and through freeloader, and scored each result with hidden tests that no session saw.
+
+| | Tasks solved | Claude cost | Wall time |
+|---|---|---|---|
+| Sonnet alone | 6 of 6 | $0.76 | 3 min |
+| Opus alone | 6 of 6 | $1.93 | 6 min |
+| freeloader 1.0.0 | 6 of 6 | $4.11 | 44 min |
+| freeloader 1.1.0 | 5 of 5 finished | $0.91 | 13 min |
+
+What that says:
+
+- **The free models can do the work.** Across both versions they passed every hidden test on every build that finished, without one task being handed back to Claude.
+- **1.0.0 cost five times more than just asking Sonnet.** Writing the code was never the expensive part. An Opus plan, an Opus review, and a session coordinating it all cost far more than the code they produced.
+- **1.1.0 removed most of that.** Sonnet plans small requests, Opus reviews only when a plan is large or something went wrong, and the whole plan runs in one call. Cost on the five comparable tasks fell from $2.82 to $0.91, against $0.58 for Sonnet alone.
+- **It is still slower, and still not cheaper than Sonnet** at this size. It is cheaper than Opus alone.
+
+The sixth 1.1.0 run is left out of that row. It hit a bug that the benchmark itself uncovered, where a stalled model was never timed out on macOS. That is fixed in 1.1.0 and the run is being repeated.
+
+Where this might pay off is work where the code is large compared with the description of it, which none of these tasks were. That is the next thing to measure. The full tables, the method, and the caveats are in [bench/](bench/README.md).
 
 ## How it works
 
 ```mermaid
 flowchart TD
-    A["/freeloader:build &lt;request&gt;"] --> B["Opus architect<br/>writes tests and small task files"]
+    A["/freeloader:build &lt;request&gt;"] --> B["Planner writes tests and small task files<br/>Sonnet for small requests, Opus for vague or wide ones"]
     B --> C{"Plan check"}
     C -- problems --> B
     C -- ok --> D["You approve the plan"]
@@ -28,11 +50,13 @@ flowchart TD
     I --> F
     H --> J{"Tasks left?"}
     J -- yes --> E
-    J -- no --> K["Opus reviews the whole diff"]
-    K --> L["You merge it or open a PR"]
+    J -- no --> K{"Large plan, hard task,<br/>or an escalation?"}
+    K -- yes --> L["Opus reviews the whole diff"]
+    K -- no --> M["You merge it or open a PR"]
+    L --> M
 ```
 
-Your Claude Code session is the orchestrator. It starts tasks and reads a one-line result for each. It never reads the code, which is what keeps it cheap.
+Your Claude Code session is the orchestrator. It starts the build with one command and reads one result. It never reads the code.
 
 ## The idea
 
@@ -40,7 +64,7 @@ Small free models are fast and often good enough, but you cannot trust them. The
 
 freeloader does not try to make them trustworthy. It assumes they are not, and puts the judgement somewhere else:
 
-- **The tests come from Opus.** The architect writes the acceptance tests while planning. They are committed before any coder starts, and an edit to them by a coder is thrown away.
+- **The tests come from Claude.** The planner writes the acceptance tests before any coder starts. They are committed first, and an edit to them by a coder is thrown away.
 - **A script decides, not a model.** A task is finished when its test command exits 0 and only the files it was allowed to change have changed. Nobody's opinion is involved.
 - **Models compete.** Up to three free models work on the same task at once, each in its own git worktree. The first one through the gate wins, so one model having a bad day does not hold anything up.
 - **Failure is cheap.** A failed attempt gets the error output and tries again. If every free model gives up, a Sonnet subagent finishes the task, and its work goes through the same gate.
@@ -84,27 +108,15 @@ Save that as `freeloader.config.json` in the root of your repository.
 
 ## What a run looks like
 
-A real run, on a small Python package, of this request:
-
-> Add two helpers to textkit, each in its own module with tests: `caesar(text, shift)` and `count_vowels(text)`.
-
-The architect wrote two test files and two task files, both marked easy and free to run in parallel:
-
-| Task | Coder | Attempts | Time | Reviewer |
-|---|---|---|---|---|
-| `001-caesar` | `muse-spark-1.3-contributor-free` | 1 | 24 s | pass |
-| `002-count-vowels` | `muse-spark-1.3-contributor-free` | 1 | 26 s | pass |
-
-Opus then reviewed the combined diff (4 files, 103 lines) and approved it. All 27 tests passed on the feature branch. Claude Code reported $0.34 of Claude usage for the whole session, split roughly evenly between planning and review on Opus and orchestration on Sonnet.
-
-That is one run on an easy feature, not a benchmark. Proper numbers are on the [roadmap](#roadmap).
-
-Each task leaves a one-line result behind, which is all the orchestrator reads:
+Each task leaves a one-line result behind, and the build reports all of them at once:
 
 ```json
-{"status":"pass","id":"001-caesar","tier":"easy","model":"opencode/muse-spark-1.3-contributor-free",
- "attempts":1,"lanes":1,"seconds":24,"review":"pass","files":["textkit/cipher.py"]}
+{"status":"pass","feature":"discounts","passed":2,"total":2,"review":"skip",
+ "tasks":[{"id":"001-types","status":"pass","model":"opencode/muse-spark-1.3-contributor-free","attempts":1},
+          {"id":"002-total","status":"pass","model":"opencode/muse-spark-1.3-contributor-free","attempts":1}]}
 ```
+
+That is from the benchmark's discounts task: two tasks planned by Sonnet, both passed by a free model on the first attempt, 24 of 24 hidden tests passing, $0.23 of Claude usage.
 
 ## Things it handles for you
 
@@ -113,7 +125,7 @@ Each task leaves a one-line result behind, which is all the orchestrator reads:
 - **Parallel work.** Tasks that do not depend on each other run at the same time. The plan is checked first so that two of them never edit the same file, and a merge that breaks the combined code is rolled back.
 - **Interruptions.** Plans, results, and branches live on disk. Close the session, come back later, and `/freeloader:resume` carries on from the tasks that are left.
 - **Picking models.** Every attempt is recorded. Models with a better record in your repository are tried first, and `/freeloader:stats` shows you the numbers.
-- **Hard tasks.** The architect marks each task easy, normal, or hard. Harder tasks get more models racing, and you can point hard ones at a stronger model of your choice.
+- **Hard tasks.** The planner marks each task easy, normal, or hard. Harder tasks get more models racing, and you can point hard ones at a stronger model of your choice.
 
 Configuration, the task file format, and every script are described in [docs/reference.md](docs/reference.md).
 
@@ -124,12 +136,14 @@ Worth knowing before you rely on it:
 - **It is not a sandbox.** Coders run unattended with a shell and web fetch inside their worktree. They are denied writes outside it and commands like `git push` and `curl`, but those rules are a guardrail. See [SECURITY.md](SECURITY.md).
 - **It depends on someone else's free tier.** opencode decides what its free models will serve, and it has been tightening that. freeloader skips a model that refuses and carries on, and you can point it at paid models instead, but free capacity is not guaranteed.
 - **Your code leaves your machine.** Free providers may log or train on what they are sent. Check their terms before using this on private code.
-- **Tests are the ceiling.** A coder can still write code that passes the visible tests and nothing else. The reviewer and the final Opus pass look for that, but nothing mechanical stops it yet.
+- **It is not a way to save money yet.** See the benchmark above.
+- **It is slow.** Free models take minutes where Claude takes seconds, and one stalled call can cost a quarter of an hour before it is timed out.
+- **Tests are the ceiling.** A coder can still write code that passes the visible tests and nothing else. The reviewer and, on larger plans, the Opus pass look for that, but nothing mechanical stops it yet.
 - **Free line-ups change.** The default models are whatever opencode offered for free when this was written. `/freeloader:doctor` tells you when one is gone.
 
 ## Roadmap
 
-- Benchmarks: cost and pass rate against a plain Claude Code session on the same tasks
+- Benchmark larger features, where coding is a bigger share of the work, to find where this breaks even
 - Held-out tests that the coder never sees
 - Windows without WSL
 

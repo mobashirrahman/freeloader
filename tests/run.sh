@@ -222,6 +222,29 @@ cached_pass_is_not_rerun() {
   eq "forced content" y "$(on_main a.txt)"
 }
 
+hung_model_is_stopped() {
+  new_repo '{"coder":{"models":["m/one"],"roundsPerModel":1,"timeoutSec":2}}'
+  task a 'test -f a.txt' a.txt
+  local out started=$SECONDS nap tries=0
+  # The coder starts a long sleep, records its pid, and waits on it.
+  out="$(FAKE_CODER_CMD='sleep 300 & echo $! > "$FAKE_STATE/nap.pid"; wait; echo x > a.txt' run f "$PLAN/a.md")"
+  eq status fail "$(field .status "$out")"
+  has "says it ran out of time" "ran out of time" "$(field .detail "$out")"
+  eq "stopped promptly" yes "$([ $((SECONDS - started)) -lt 20 ] && echo yes || echo "no, $((SECONDS - started))s")"
+  nap="$(cat "$FAKE_STATE/nap.pid")"
+  while kill -0 "$nap" 2>/dev/null && [ "$tries" -lt 30 ]; do sleep 0.2; tries=$((tries + 1)); done
+  eq "what the model started was stopped too" gone "$(kill -0 "$nap" 2>/dev/null && echo alive || echo gone)"
+}
+
+gate_that_hangs_is_stopped() {
+  new_repo '{"coder":{"models":["m/one"],"roundsPerModel":1},"gate":{"timeoutSec":2}}'
+  task a 'sleep 60' a.txt
+  local out started=$SECONDS
+  out="$(FAKE_CODER_CMD='echo x > a.txt' run f "$PLAN/a.md")"
+  eq stage gate "$(field .stage "$out")"
+  eq "stopped promptly" yes "$([ $((SECONDS - started)) -lt 20 ] && echo yes || echo "no, $((SECONDS - started))s")"
+}
+
 bad_task_file_is_an_error() {
   new_repo
   printf -- '---\nid: has space\n---\nx\n' >"$PLAN/bad.md"
@@ -307,6 +330,106 @@ refused_reviewer_leaves_it_to_the_gate() {
   eq "refusing reviewers are not asked again" "" "$(grep '^reviewer' "$FAKE_STATE/calls")"
 }
 
+# --- whole plans -------------------------------------------------------------
+
+# A coder that creates whichever of the listed files its task allows.
+MAKES='for f in a b c d; do echo "$FAKE_PROMPT" | grep -qx "$f.txt" && echo x > "$f.txt"; done; true'
+
+plan_runs_in_one_call() {
+  new_repo
+  task a 'test -f a.txt' a.txt 'tier: easy'
+  task b 'test -f b.txt' b.txt 'tier: easy'
+  task c 'test -f c.txt && test -f a.txt' c.txt 'tier: easy
+depends:
+  - a
+  - b'
+  local out
+  out="$(FAKE_CODER_CMD="$MAKES" "$S/run-plan.sh" f 2>/dev/null)"
+  eq status pass "$(field .status "$out")"
+  eq passed 3 "$(field .passed "$out")"
+  eq "small plan needs no review" skip "$(field .review "$out")"
+  has "diff is ready" feature.diff "$(field .diff "$out")"
+  eq "all merged" x "$(on_main c.txt)"
+}
+
+plan_stops_then_carries_on() {
+  new_repo '{"coder":{"models":["m/one"],"roundsPerModel":1}}'
+  task a 'test -f a.txt' a.txt
+  task b 'test -f b.txt' b.txt
+  task c 'test -f c.txt' c.txt 'depends:
+  - b'
+  local out skip_b='for f in a c; do echo "$FAKE_PROMPT" | grep -qx "$f.txt" && echo x > "$f.txt"; done; true'
+  out="$(FAKE_CODER_CMD="$skip_b" "$S/run-plan.sh" f 2>/dev/null)"
+  eq status incomplete "$(field .status "$out")"
+  eq failed '["b"]' "$(field '.failed | tostring' "$out")"
+  eq "dependent task not started" '["c"]' "$(field '.pending | tostring' "$out")"
+  has "failure carries its worktree" worktrees/f/b "$(field '.tasks[] | select(.id == "b") | .worktree' "$out")"
+  echo x >"$(field '.tasks[] | select(.id == "b") | .worktree' "$out")/b.txt"
+  run --verify-only f "$PLAN/b.md" >/dev/null
+  : >"$FAKE_STATE/calls"
+  out="$(FAKE_CODER_CMD="$skip_b" "$S/run-plan.sh" f 2>/dev/null)"
+  eq "second run" pass "$(field .status "$out")"
+  eq "finished tasks were not run again" 1 "$(grep -c '^coder' "$FAKE_STATE/calls")"
+  eq "an escalated task asks for review" needed "$(field .review "$out")"
+}
+
+plan_outlasting_the_wait_is_resumed() {
+  new_repo '{"plan":{"waitSec":2},"tiers":{"normal":{"race":1}}}'
+  task a 'test -f a.txt' a.txt
+  local out
+  out="$(FAKE_CODER_CMD='sleep 6; echo x > a.txt' "$S/run-plan.sh" f 2>/dev/null)"
+  eq "first call" running "$(field .status "$out")"
+  eq "reports progress" 0/1 "$(field '"\(.passed)/\(.total)"' "$out")"
+  echo '{"tiers":{"normal":{"race":1}}}' >freeloader.config.json
+  out="$("$S/run-plan.sh" f 2>/dev/null)"
+  eq "second call" pass "$(field .status "$out")"
+  eq "the build was not started twice" 1 "$(grep -c '^coder' "$FAKE_STATE/calls")"
+}
+
+plan_review_rules() {
+  new_repo
+  for id in a b c d; do task "$id" "test -f $id.txt" "$id.txt" 'tier: easy'; done
+  local out
+  out="$(FAKE_CODER_CMD="$MAKES" "$S/run-plan.sh" f 2>/dev/null)"
+  eq "four tasks" needed "$(field .review "$out")"
+  echo '{"finalReview":{"mode":"never"}}' >freeloader.config.json
+  eq "never" skip "$("$S/run-plan.sh" f 2>/dev/null | jq -r .review)"
+
+  new_repo '{"tiers":{"hard":{"race":1}}}'
+  task a 'test -f a.txt' a.txt 'tier: hard'
+  out="$(FAKE_CODER_CMD="$MAKES" "$S/run-plan.sh" f 2>/dev/null)"
+  eq "a hard task" needed "$(field .review "$out")"
+}
+
+plan_invalid_is_reported() {
+  new_repo
+  task a 'true' a.txt 'depends:
+  - b'
+  task b 'true' b.txt 'depends:
+  - a'
+  local out
+  out="$("$S/run-plan.sh" f 2>/dev/null)"
+  eq status plan_invalid "$(field .status "$out")"
+  has problem "dependency cycle" "$(field '.problems[0]' "$out")"
+}
+
+start_runs_the_preflight() {
+  new_repo
+  local out
+  out="$("$S/feature.sh" start g "Another thing" 2>/dev/null)"
+  eq status ok "$(field .status "$out")"
+  eq "says who plans" auto "$(field .planner "$out")"
+  out="$(FAKE_NO_MODELS=1 "$S/feature.sh" start h 2>/dev/null)"
+  eq "no models" fail "$(field .status "$out")"
+  eq "nothing was created" "" "$(git branch --list 'freeloader/h/*')"
+}
+
+planner_matches_architect() {
+  local body='1,/^---$/{/^---$/!d;}'
+  eq "same instructions" "" "$(diff <(sed "$body" "$ROOT/agents/architect.md" | tail -n +3) <(sed "$body" "$ROOT/agents/planner.md" | tail -n +3))"
+  has "planner is on sonnet" "model: sonnet" "$(cat "$ROOT/agents/planner.md")"
+}
+
 # --- parallel tasks ----------------------------------------------------------
 
 parallel_conflict_then_rerun() {
@@ -375,6 +498,8 @@ t "task: out-of-scope change fails" out_of_scope_fails
 t "task: protected edits are discarded" protected_edits_are_discarded
 t "task: verify-only after a manual fix" verify_only_after_failure
 t "task: cached pass is not rerun" cached_pass_is_not_rerun
+t "task: a hung model is stopped" hung_model_is_stopped
+t "task: a hung gate is stopped" gate_that_hangs_is_stopped
 t "task: bad task file is an error" bad_task_file_is_an_error
 t "models: rate-limited model cools down" rate_limited_model_cools_down
 t "models: race, first lane to pass wins" race_first_lane_to_pass_wins
@@ -382,6 +507,13 @@ t "models: tier sets lanes and models" tier_sets_lanes_and_models
 t "models: better model goes first" better_model_goes_first
 t "models: permissions follow the config" permissions_follow_the_config
 t "models: refused reviewer leaves it to the gate" refused_reviewer_leaves_it_to_the_gate
+t "plan: runs in one call" plan_runs_in_one_call
+t "plan: stops, then carries on" plan_stops_then_carries_on
+t "plan: a build outlasting the wait is resumed" plan_outlasting_the_wait_is_resumed
+t "plan: when a final review is needed" plan_review_rules
+t "plan: invalid plan is reported" plan_invalid_is_reported
+t "start: runs the preflight" start_runs_the_preflight
+t "agents: planner matches architect" planner_matches_architect
 t "parallel: conflict, then rerun" parallel_conflict_then_rerun
 t "parallel: pass alone, fail together" parallel_pass_alone_fail_together
 t "status: tracks progress" status_tracks_progress

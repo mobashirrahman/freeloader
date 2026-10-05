@@ -7,7 +7,7 @@
     {
       "name": "freeloader",
       "source": "./",
-      "description": "Opus plans, free opencode models write and review the code, and a test gate decides what gets merged."
+      "description": "Claude plans, free opencode models write and review the code, and a test gate decides what gets merged."
     }
   ],
   "metadata": {

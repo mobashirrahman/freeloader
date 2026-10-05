@@ -13,7 +13,7 @@ The [README](../README.md) covers what freeloader is and how to start. This page
 
 ## How a task runs
 
-`scripts/run-task.sh <feature> <task-file>` takes one task from nothing to merged:
+`scripts/run-plan.sh <feature>` runs every task in a plan, in dependency order. For each one, `scripts/run-task.sh <feature> <task-file>` takes it from nothing to merged:
 
 1. **Pick the models.** The task tier's own models go first, then the general list ordered by recorded pass rate. Models in a rate-limit cooldown are left out.
 2. **Open the lanes.** One to three, depending on the tier. Each lane is its own git worktree and gets its own share of the models, so two lanes never compete for one model's quota.
@@ -26,9 +26,11 @@ The [README](../README.md) covers what freeloader is and how to start. This page
 
 If every free model fails, the orchestrator hands the worktree to a Sonnet subagent, then runs `run-task.sh --verify-only` so that the fix goes through the same scope check, gate, and merge.
 
+Every model call and every gate command has a time limit (`coder.timeoutSec`, `reviewer.timeoutSec`, `gate.timeoutSec`). When one is reached, the command and everything it started are stopped.
+
 ## Task files
 
-The architect writes one Markdown file per task into `.freeloader/plan/<feature>/`. You can write or edit them by hand too.
+The planner writes one Markdown file per task into `.freeloader/plan/<feature>/`. You can write or edit them by hand too.
 
 ```
 ---
@@ -56,7 +58,7 @@ What to build: exact names, signatures, behaviours, and edge cases.
 | `depends` | no | Ids of tasks that must pass first. |
 | `tier` | no | `easy`, `normal` (default), or `hard`. Sets how many models race and which go first. |
 
-Everything after the front matter is the prompt the coder sees, along with the allowed files, the protected files, and the acceptance command. The coder has not seen your conversation, so the task has to stand on its own.
+Everything after the front matter is the prompt the coder sees, along with the allowed files, the protected files, and the acceptance command. The coder has not seen your conversation, so the task has to stand on its own. When protected tests define the behaviour, the body can be a few lines: the coder reads the tests, and prose that repeats them only costs planner tokens.
 
 `scripts/check-plan.sh <feature>` validates a plan before anything runs. It rejects missing fields, unknown or circular dependencies, and pairs of tasks that could run at the same time while editing the same file. It also returns the tasks grouped into waves: everything in a wave can run in parallel once the earlier waves have passed.
 
@@ -109,6 +111,11 @@ Defaults live in [`freeloader.config.default.json`](../freeloader.config.default
 | `reviewer.required` | `false` | If `true`, a task fails when no reviewer returns a usable verdict. Otherwise the gate alone decides. |
 | `tiers.<tier>.race` | 1, 2, 3 | Lanes for easy, normal, and hard tasks. |
 | `tiers.<tier>.models` | empty | Models tried first for that tier, ahead of `coder.models`. A good place for a stronger paid model on hard tasks. |
+| `planner.model` | `auto` | Who plans: `sonnet`, `opus`, or `auto`, which uses Sonnet for small, clearly specified requests and Opus for vague or wide ones. |
+| `finalReview.mode` | `auto` | When Opus reviews the finished diff: `always`, `never`, or `auto`. |
+| `finalReview.minTasks` | `4` | In `auto`, plans with at least this many tasks are reviewed. So are plans with a hard task and builds where a task had to be escalated. |
+| `plan.parallel` | `3` | Tasks run at once within a wave. |
+| `plan.waitSec` | `540` | How long `run-plan.sh` blocks before answering `running`. The build continues in the background, and calling it again resumes the wait. |
 | `quota.cooldownSec` | `1800` | How long a model is skipped after it rate-limits or refuses a request. |
 | `coder.web`, `reviewer.web` | `true` | Whether the model may fetch web pages, mainly to read documentation. |
 
@@ -165,7 +172,8 @@ The slash commands are thin wrappers around these. They are safe to run by hand 
 
 | Script | Does |
 |---|---|
-| `feature.sh start <feature> [request]` | Creates the feature branch, its worktree, and the plan directory. |
+| `feature.sh start <feature> [request]` | Runs the preflight, then creates the feature branch, its worktree, and the plan directory. |
+| `run-plan.sh <feature>` | Runs a whole plan: checks it, commits the tests, and runs every task in order. Safe to call again; finished tasks are skipped. |
 | `check-plan.sh <feature>` | Validates the plan and returns the waves. |
 | `feature.sh commit-tests <feature>` | Commits the architect's tests to the feature branch. |
 | `run-task.sh <feature> <task-file>` | Runs one task. `--verify-only` gates and merges an existing worktree. `--force` re-runs a task that already passed. |

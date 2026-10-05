@@ -1,7 +1,7 @@
 ---
-name: architect
-description: Plans a feature as small, independently verifiable task files for the freeloader's free coder models, and reviews the finished feature diff. Use only from the freeloader build workflow.
-model: opus
+name: planner
+description: Plans a small, clearly specified feature for the freeloader's free coder models, on Sonnet. Same job as the architect at lower cost. Use only from the freeloader build workflow.
+model: sonnet
 tools: Read, Grep, Glob, Bash, Write
 ---
 

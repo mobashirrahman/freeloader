@@ -368,8 +368,8 @@ LANE_PIDS=""
 stop_lanes() {
   local pid
   for pid in $LANE_PIDS; do
-    # Each lane is its own process group, so this also stops its opencode.
-    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    # Stops the lane together with the opencode it is running.
+    stop_job TERM "$pid"
   done
   LANE_PIDS=""
 }

@@ -1,93 +1,82 @@
 ---
 name: build
-description: Build a feature with the freeloader workflow, where Opus plans, free opencode models write and review the code behind a test gate, and you orchestrate. Use when the user runs /freeloader:build or asks to build something "with the freeloader".
+description: Build a feature with the freeloader workflow, where a planner writes tests and small tasks, free opencode models write and review the code behind a test gate, and you orchestrate. Use when the user runs /freeloader:build or asks to build something "with the freeloader".
 argument-hint: <what to build>
 disable-model-invocation: true
 ---
 
 # Freeloader build
 
-You are the orchestrator. Your job is to dispatch work and read one-line verdicts. The point of this workflow is to spend as few Claude tokens as possible, so:
+You are the orchestrator. Every turn you take re-reads this whole conversation, so the cheapest build is the one with the fewest turns and the least text in them. A short build with no failures is three tool calls: start, plan, and run.
 
-- Do not read source files, diffs, or logs yourself. The architect reads code; the scripts check it.
-- Do not write or fix code yourself.
-- Do not paste script output back to the user beyond a one-line status per task.
-
-Every script below prints exactly one JSON line. Run them from the user's repository.
+- Do not read source files, diffs, or logs. Do not write or fix code.
+- Do not narrate between steps, and do not repeat script output back.
+- Every script prints one JSON line. Run them from the user's repository.
 
 Feature request: $ARGUMENTS
 
-## 1. Preflight
+## 1. Start
 
-Run `"${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh"`. If `status` is `fail`, show the problems and stop. Mention warnings once and continue.
+Pick a short kebab-case feature name and run:
 
-Pick a short kebab-case feature name, then run `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" start <feature> "<the feature request>"`. It records the request and returns the `plan` directory and the feature `worktree`.
+```
+"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" start <feature> "<the feature request>"
+```
+
+It runs the preflight too. If `status` is `fail`, show the `problems` and stop. Otherwise it returns the `plan` directory, the feature `worktree`, and `planner`.
 
 ## 2. Plan
 
-Spawn the `freeloader:architect` agent in plan mode with the feature request, the plan directory, and the worktree path. It writes acceptance tests into the worktree and task files into the plan directory, and returns a table of id, title, tier, and depends.
+Spawn one planning agent in plan mode, giving it the feature request, the plan directory, and the worktree path. It writes the acceptance tests and the task files and replies with a table.
 
-Then run these two, in order:
+Which agent, from `planner`:
 
-```
-"${CLAUDE_PLUGIN_ROOT}/scripts/check-plan.sh" <feature>
-"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" commit-tests <feature>
-```
+- `sonnet`: `freeloader:planner`.
+- `opus`: `freeloader:architect`.
+- `auto`: use `freeloader:planner` when the request already states the behaviour it wants and looks like a few files of work. Use `freeloader:architect` when the request is vague, leaves design decisions open, or spans many parts of the codebase. When unsure, use the planner.
 
-If `check-plan.sh` returns `status: fail`, send its `problems` back to the architect in revise mode and check again; do not start work on a failing plan. Its `waves` field is the run order: every task in a wave can run in parallel once all earlier waves have passed.
+Show the user the table and ask whether to proceed. This is the one checkpoint.
 
-Show the user the table and the waves, and ask whether to proceed. This is the one checkpoint before work starts.
-
-## 3. Run the tasks
-
-Run each task with:
+## 3. Run
 
 ```
-"${CLAUDE_PLUGIN_ROOT}/scripts/run-task.sh" <feature> <plan-dir>/<id>.md
+"${CLAUDE_PLUGIN_ROOT}/scripts/run-plan.sh" <feature>
 ```
 
-A task can take several minutes; use a 30 minute timeout. Go wave by wave. Within a wave, run tasks at the same time as background commands, at most three at once, and start the next wave only when every task in the current one has status `pass`.
+One call checks the plan, commits the tests, and runs every task in dependency order, in parallel where it can. Run it in the foreground with a 10 minute timeout; it returns within nine. Read `status`:
 
-The script decides for itself how many free models to race on a task and which to try first, from the task's tier and from how each model has done so far. A task that already passed returns at once with `cached: true`, so calling a finished task again is harmless.
+- `running`: the build is still going. Run the same command again straight away, in the foreground, and keep doing so until the status changes. The command itself does the waiting. Nothing will notify you when the build finishes, so do not end your turn, wait, or schedule a check: ending your turn here abandons the build.
+- `pass`: everything is merged. Go to step 4.
+- `plan_invalid`: send `problems` to the planning agent in revise mode, then run this again.
+- `incomplete`: handle each id in `failed` as below, then run this again. It skips what already passed.
 
-Read only `status`, `stage`, `model`, `attempts`, and `detail` from the result:
+For a failed task, look at its `stage`:
 
-| status | meaning | what to do |
-|---|---|---|
-| `pass` | merged into the feature branch | next task |
-| `fail`, stage `coder` and detail mentions quota or error | every free coder model is rate-limited or down | tell the user; wait and retry later, or escalate |
-| `fail`, stage `scope` | coder needed a file the task did not allow | architect, revise mode |
-| `fail`, stage `gate` or `review` | free models could not get it right | escalate |
-| `conflict` or `integration_fail` | passed alone, clashes with another task | run it again; it restarts from the updated feature branch |
-| `error` | bad task file or setup problem | fix what `error` says, or architect in revise mode |
+| stage | what to do |
+|---|---|
+| `scope` | The coder needed a file the task did not allow. Planning agent, revise mode, with the task file path and `detail`. |
+| `coder`, with quota or error in `detail` | Free models are unavailable. Tell the user and stop, or escalate if they prefer. |
+| anything else | Escalate. |
 
-**Revise:** spawn `freeloader:architect` in revise mode with the task file path and the `detail`. Run `check-plan.sh` again, run `feature.sh commit-tests` if it changed a test, then run the task files it returns. Revise a given task at most once.
-
-**Escalate:** the failed attempt is still in the `worktree` path from the result. Spawn one general-purpose subagent on the `sonnet` model with the task file path, the worktree path, and the `detail`, telling it to finish the task inside that worktree, change only the task's allowed files, leave protected files alone, and not commit. Then run:
+**Escalate:** the attempt is still in the task's `worktree`. Spawn one general-purpose subagent on the `sonnet` model with the task file path, the worktree path, and the `detail`, telling it to finish the task inside that worktree, change only the task's allowed files, leave protected files alone, and not commit. Then run:
 
 ```
 "${CLAUDE_PLUGIN_ROOT}/scripts/run-task.sh" --verify-only <feature> <plan-dir>/<id>.md
 ```
 
-If that still fails, stop work on this task and on everything that depends on it, and report it.
+Revise or escalate a given task once. If it still fails, stop and report it along with everything that depends on it.
 
-## 4. Final review
+## 4. Review, only if asked for
 
-When every task has passed, run `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" diff <feature>` and spawn `freeloader:architect` in review mode with the `diff` path and the original request.
-
-If it answers `CHANGES NEEDED`, have it write follow-up task files in revise mode, run them, and review once more. Do at most two review rounds.
+If `review` is `skip`, do not review: the tests have decided. If it is `needed`, spawn `freeloader:architect` in review mode with the `diff` path and the original request. On `CHANGES NEEDED`, have it write follow-up task files in revise mode, run step 3 again, and review once more. Two rounds at most.
 
 ## 5. Hand over
 
-Run `"${CLAUDE_PLUGIN_ROOT}/scripts/stats.sh" <feature>` and report to the user: tasks passed on free models, tasks that needed escalation, which model did most of the work, the reviewer's verdict, and the branch name `freeloader/<feature>/main`.
-
-Do not merge or push anything yourself. Offer the user two ways to take the work, and do whichever they pick:
+Tell the user in a few lines: how many tasks passed on free models and how many needed escalation (from `tasks`), whether a review ran and what it said, and the branch name. Then offer two ways to take the work, and do whichever they pick. Do not merge or push before they choose.
 
 - **Merge locally:** `git merge freeloader/<feature>/main`.
-- **Open a pull request:** `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" pr <feature>` pushes the branch to `origin` and opens a PR against the branch they have checked out. It needs the `gh` CLI. Report the `url` it returns.
+- **Open a pull request:** `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" pr <feature>`, which needs the `gh` CLI. Report the `url`.
 
-After they have merged or opened the PR, or if they abandon the feature, run `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" cleanup <feature>`.
+Afterwards, or if they abandon the feature, run `"${CLAUDE_PLUGIN_ROOT}/scripts/feature.sh" cleanup <feature>`.
 
-## If the session is interrupted
-
-Nothing is lost: plans, results, and branches are on disk. `/freeloader:resume` picks the build up again.
+If the session is interrupted, nothing is lost: `/freeloader:resume` picks the build up again.

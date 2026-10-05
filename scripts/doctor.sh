@@ -24,8 +24,6 @@ ok() { echo "ok    $1" >&2; }
 for c in git jq opencode; do
   if command -v "$c" >/dev/null 2>&1; then ok "$c found"; else problem "$c is not installed"; fi
 done
-command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1 \
-  || command -v perl >/dev/null 2>&1 || problem "need one of: timeout, gtimeout, perl"
 
 finish() {
   jq -cn --arg p "$PROBLEMS" --arg w "$WARNINGS" '

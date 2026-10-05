@@ -7,7 +7,23 @@
 #                      (pass or fail); once they run out it passes.
 #   FAKE_QUOTA_MODELS  comma-separated models that answer with a rate limit.
 #   FAKE_REFUSE_ROLES  comma-separated roles (coder, reviewer) the provider refuses.
+#   FAKE_NO_MODELS     when set, `opencode models` lists nothing.
 #   FAKE_STATE         directory for the call log and the review counter.
+
+# The two commands the preflight uses. Every model named in the default config or
+# in the repository's own config counts as on offer, unless FAKE_NO_MODELS is set.
+if [ "${1:-}" = models ]; then
+  [ -z "${FAKE_NO_MODELS:-}" ] || exit 0
+  here="$(cd "$(dirname "$0")/../.." && pwd)"
+  for config in "$here/freeloader.config.default.json" ./freeloader.config.json; do
+    [ -f "$config" ] && jq -r '.. | objects | .models? // empty | .[]' "$config"
+  done
+  exit 0
+fi
+if [ "${1:-}" = auth ]; then
+  echo "stub credentials"
+  exit 0
+fi
 
 model="" prev="" prompt=""
 for arg in "$@"; do

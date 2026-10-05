@@ -6,7 +6,7 @@ Does handing the typing to free models save anything, and does the code still wo
 |---|---|
 | Sonnet alone | A plain Claude Code session on Sonnet |
 | Opus alone | A plain Claude Code session on Opus |
-| freeloader | `/freeloader:build` in a Sonnet session: Opus plans and reviews, free models code |
+| freeloader | `/freeloader:build` in a Sonnet session: Claude plans, free models code. Run for versions 1.0.0 and 1.1.0. |
 
 Results are in [RESULTS.md](RESULTS.md).
 
@@ -44,7 +44,9 @@ bench/run.py --arms freeloader --out bench/results/freeloader.json
 bench/report.py bench/results/baselines.json bench/results/freeloader.json
 ```
 
-It needs `claude`, `git`, `python3`, and `pytest`, plus opencode for the freeloader arm. It spends real Claude usage: expect a few dollars for the full set.
+It needs `claude`, `git`, `python3`, and `pytest`, plus opencode for the freeloader arm. It spends real Claude usage: a few dollars for the full set.
+
+`--tasks` runs a subset, `--plugin-dir` points the freeloader arm at another checkout so that two versions can be compared, and `report.py` takes `LABEL=FILE` to give a results file its own column.
 
 ## What this does not tell you
 

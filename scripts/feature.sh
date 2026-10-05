@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # feature.sh <action> <feature> [argument]
 #
-#   start <feature> [request]  create the integration branch and worktree and the
-#                              plan directory, and record what was asked for
+#   start <feature> [request]  run the preflight, create the integration branch
+#                              and worktree and the plan directory, and record
+#                              what was asked for
 #   commit-tests <feature>     commit what the architect wrote into the feature
 #                              worktree, so every task starts with the acceptance
 #                              tests already in place
@@ -32,11 +33,20 @@ PLAN="$FL_DIR/plan/$FEATURE"
 
 case "$ACTION" in
   start)
+    # The preflight runs here so that starting a build is one call, not two.
+    DOCTOR="$("$FL_ROOT/scripts/doctor.sh" 2>/dev/null)"
+    if [ "$(jq -r '.status // "fail"' <<<"$DOCTOR" 2>/dev/null)" != ok ]; then
+      jq -c '{status: "fail", problems: (.problems // ["preflight could not run"]), warnings: (.warnings // [])}' \
+        <<<"${DOCTOR:-{\}}"
+      exit 1
+    fi
     ensure_feature "$FEATURE"
     mkdir -p "$PLAN"
     [ -z "$ARG" ] || printf '%s\n' "$ARG" >"$PLAN/REQUEST.txt"
     jq -cn --arg feature "$FEATURE" --arg branch "$BRANCH" --arg worktree "$MAIN_WT" --arg plan "$PLAN" \
-      '{status: "ok", feature: $feature, branch: $branch, worktree: $worktree, plan: $plan}'
+      --arg planner "$(cfg '.planner.model')" --argjson doctor "$DOCTOR" \
+      '{status: "ok", feature: $feature, branch: $branch, worktree: $worktree, plan: $plan,
+        planner: $planner, warnings: $doctor.warnings}'
     ;;
   commit-tests)
     [ -d "$MAIN_WT" ] || die "feature not started: $FEATURE"

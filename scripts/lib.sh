@@ -53,19 +53,55 @@ load_repo() {
 
 cfg() { jq -r "$1" <<<"$CFG"; }
 
-with_timeout() {
-  local secs=$1
-  shift
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$secs" "$@"
-  else
-    perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$secs" "$@"
-  fi
+# kill_tree <signal> <pid>: signal a process and everything descended from it.
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$2" 2>/dev/null); do
+    kill_tree "$1" "$child"
+  done
+  kill "-$1" "$2" 2>/dev/null
 }
 
-is_timeout_rc() { [ "$1" -eq 124 ] || [ "$1" -eq 142 ]; }
+# stop_job <signal> <pid>: stop a job started under `set -m`, which makes it the
+# leader of its own process group. The group catches children that were being
+# started at that instant; the tree walk catches any that left the group.
+stop_job() {
+  kill_tree "$1" "$2"
+  kill "-$1" -- "-$2" 2>/dev/null
+}
+
+# with_timeout <seconds> <command...>: runs the command and stops it, and
+# everything it started, if it is still going after the limit. Done in the shell
+# itself because macOS ships no `timeout`, and an alarm signal does not stop
+# opencode.
+with_timeout() {
+  local secs=$1 pid watchdog rc
+  shift
+  set -m
+  "$@" &
+  pid=$!
+  set +m
+  (
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    sleep "$secs" &
+    nap=$!
+    wait "$nap"
+    stop_job TERM "$pid"
+    sleep 5 &
+    nap=$!
+    wait "$nap"
+    stop_job KILL "$pid"
+  ) >/dev/null 2>&1 &
+  watchdog=$!
+  wait "$pid" 2>/dev/null
+  rc=$?
+  kill -TERM "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  return "$rc"
+}
+
+# Stopped by with_timeout: ended by SIGTERM (143) or, failing that, SIGKILL (137).
+is_timeout_rc() { [ "$1" -eq 143 ] || [ "$1" -eq 137 ]; }
 
 # The coder and the reviewer both run on opencode's stock "build" agent. What sets
 # them apart is the permission config passed for that one run, and the role

@@ -2,6 +2,26 @@
 
 Notable changes to this project. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-10-05
+
+A benchmark against plain Claude Code showed that in 1.0.0 the planning, review, and orchestration cost several times more than the coding they replaced. This release cuts that overhead and fixes a timeout bug the benchmark exposed.
+
+### Added
+
+- `bench/`: six tasks run through plain Sonnet, plain Opus, and freeloader, scored by hidden tests. See `bench/RESULTS.md`.
+- `scripts/run-plan.sh` runs a whole plan in one call, so the orchestrating session takes a handful of turns instead of one or more per task. It waits at most `plan.waitSec` and answers `running` if the build is not done, so it never outlasts the caller's own time limit.
+- A Sonnet `planner` agent for small, clearly specified requests. `planner.model` chooses between it and the Opus architect.
+
+### Changed
+
+- The final Opus review runs only for plans of four or more tasks, plans with a hard task, or builds where a task was escalated. `finalReview.mode` sets this to `always` or `never`.
+- Planners write short task files that point at the protected tests instead of restating them.
+- `feature.sh start` runs the preflight itself.
+
+### Fixed
+
+- Timeouts did nothing on systems without GNU `timeout`, which includes macOS: a hung model or acceptance command was never stopped. They are now enforced by the scripts themselves and stop everything the command started.
+
 ## [1.0.0] - 2026-10-05
 
 First stable release. The task runner is unchanged from 0.3.0.
@@ -47,6 +67,7 @@ First public version.
 - `/freeloader:doctor` preflight.
 - End-to-end test suite that runs without model access.
 
+[1.1.0]: https://github.com/mobashirrahman/freeloader/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mobashirrahman/freeloader/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/mobashirrahman/freeloader/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mobashirrahman/freeloader/releases/tag/v0.2.0
